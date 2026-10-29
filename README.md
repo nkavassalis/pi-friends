@@ -68,8 +68,17 @@ at `127.0.0.1:<localPort>`.
 
 Settings live in `~/.config/pi-escalation/config.json`, which overrides the defaults in `client.ts`:
 
+**Friends (since 2026-10-29).** The config is either the single-friend shape above (treated as friend
+`flint` — existing files need no change) or `{"friends":[{...}, ...]}`: one entry per model, each
+registering its own `ask_<name>` tool with its own queue, persona (`system`), description and
+guidelines (`{{tool}}` is replaced with the tool name). Names are sanitized to `[a-z0-9_]`; each friend's
+`keyFile` defaults to `~/.config/pi-escalation/<name>_key`. A friend is any OpenAI-compatible
+chat endpoint — adding one is a config entry plus a key file, no code. New friend = new egress:
+that is Nick's call (house rules), and `~/meta/scripts/model-probe.py --key-file` works against it.
+
 | Setting | Default | Notes |
 |---|---|---|
+| `name` | `flint` | friend name; the tool is `ask_<name>` (sanitized to `[a-z0-9_]`) |
 | `baseUrl` | `http://127.0.0.1:11501/v1` | `install.sh` writes `FLINT_URL` here (the Mac's LAN relay) |
 | `tunnel` | unset | optional: `host` (the Mac's ssh target), `identity`, `localPort`, `remotePort` |
 | `maxTokens` | 32768 | |

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { TunnelConfig } from "./tunnel.ts";
 
 export interface FlintConfig {
+	name?: string; // friend name; the tool is ask_<name>. Default "flint" (the original single-friend shape)
 	baseUrl: string; // OpenAI-compatible base, e.g. http://<mac>:11502/v1 (mac-tuning's LAN relay in front of rec)
 	model: string;
 	keyFile: string; // file holding the server's API key
@@ -16,9 +17,14 @@ export interface FlintConfig {
 	timeoutMin: number; // whole request, queue wait excluded
 	maxBriefChars: number; // longer briefs are refused (the Mac prefills ~600 tok/s), never cut
 	tunnel?: TunnelConfig; // set: the tool opens/repairs the SSH tunnel itself before each call (tunnel.ts)
+	system?: string; // persona for the one-turn chat (index.ts has a default)
+	description?: string; // tool description override
+	label?: string; // display name in the tool UI
+	guidelines?: string[]; // prompt-guideline overrides; {{tool}} is replaced with the tool name
 }
 
 export const DEFAULTS: FlintConfig = {
+	name: "flint",
 	baseUrl: "http://127.0.0.1:11501/v1",
 	model: "flint",
 	keyFile: "~/.config/pi-escalation/flint_key",
@@ -42,6 +48,29 @@ export function loadConfig(path = CONFIG_PATH): FlintConfig {
 		if (e?.code !== "ENOENT") throw new Error(`ask_flint: cannot read ${path}: ${e.message}`);
 	}
 	return { ...DEFAULTS, ...file };
+}
+
+/**
+ * All friends to register. config.json is either the original single-friend shape
+ * (treated as friend "flint" — existing installs need no change) or
+ * {"friends":[{name, baseUrl, ...}, ...]}. Each named friend defaults its keyFile to
+ * ~/.config/pi-escalation/<name>_key; names are sanitized to [a-z0-9_] so the tool
+ * name ask_<name> is always valid.
+ */
+export function loadFriends(path = CONFIG_PATH): FlintConfig[] {
+	let file: any = {};
+	try {
+		file = JSON.parse(readFileSync(path, "utf8"));
+	} catch (e: any) {
+		if (e?.code !== "ENOENT") throw new Error(`ask: cannot read ${path}: ${e.message}`);
+	}
+	if (Array.isArray(file?.friends) && file.friends.length > 0) {
+		return file.friends.map((f: any) => {
+			const clean = String(f?.name ?? "friend").toLowerCase().replace(/[^a-z0-9_]/g, "_");
+			return { ...DEFAULTS, ...f, name: clean, keyFile: f.keyFile ?? `~/.config/pi-escalation/${clean}_key` } as FlintConfig;
+		});
+	}
+	return [{ ...DEFAULTS, ...file }]; // legacy single-friend config
 }
 
 export function readKey(cfg: FlintConfig): string {
@@ -113,7 +142,7 @@ export async function askFlint(
 			signal: sig,
 		});
 	} catch (e: any) {
-		throw new Error(timeout.aborted ? `ask_flint: timed out after ${cfg.timeoutMin} min` : `ask_flint: cannot reach Flint at ${cfg.baseUrl} (is the Mac up, and is baseUrl right?): ${e.message}`);
+		throw new Error(timeout.aborted ? `ask: timed out after ${cfg.timeoutMin} min` : `ask: cannot reach ${cfg.name ?? "friend"} at ${cfg.baseUrl} (is the server up, and is baseUrl right?): ${e.message}`);
 	}
 	if (!res.ok || !res.body) {
 		const text = await res.text().catch(() => "");

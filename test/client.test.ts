@@ -7,7 +7,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { askFlint, checkBrief, DEFAULTS, loadConfig, Queue, readKey } from "../extensions/ask-flint/client.ts";
+import { askFlint, checkBrief, DEFAULTS, loadConfig, loadFriends, Queue, readKey } from "../extensions/ask-flint/client.ts";
 
 type Handler = (body: any, res: any) => void;
 
@@ -79,7 +79,7 @@ test("HTTP error surfaces status and body", async () => {
 });
 
 test("unreachable server names the URL", async () => {
-	await assert.rejects(askFlint({ ...DEFAULTS, baseUrl: "http://127.0.0.1:1/v1" }, "k", "b"), /cannot reach Flint at http:\/\/127\.0\.0\.1:1\/v1/);
+	await assert.rejects(askFlint({ ...DEFAULTS, baseUrl: "http://127.0.0.1:1/v1" }, "k", "b"), /cannot reach flint at http:\/\/127\.0\.0\.1:1\/v1/);
 });
 
 test("timeout aborts a stalled stream", async () => {
@@ -154,4 +154,42 @@ test("config: missing file gives defaults, file overrides, bad JSON is an error;
 	assert.throws(() => readKey({ ...cfg, keyFile: join(d, "nokey") }), /API key file/);
 	writeFileSync(join(d, "bad.json"), "{");
 	assert.throws(() => loadConfig(join(d, "bad.json")), /cannot read/);
+});
+
+// --- friends config (multi-model) -------------------------------------------------
+const tmpCfg = (obj: unknown) => {
+	const dir = mkdtempSync(join(tmpdir(), "fscfg-"));
+	const p = join(dir, "config.json");
+	writeFileSync(p, JSON.stringify(obj));
+	return p;
+};
+
+test("friends: legacy single-friend config still loads as flint", () => {
+	const p = tmpCfg({ baseUrl: "http://h:1/v1" });
+	const friends = loadFriends(p);
+	assert.equal(friends.length, 1);
+	assert.equal(friends[0].name, "flint");
+	assert.equal(friends[0].baseUrl, "http://h:1/v1");
+	assert.equal(friends[0].maxTokens, DEFAULTS.maxTokens);
+});
+
+test("friends: friends[] entries get defaults, keyFile per name, sanitized tool name", () => {
+	const KEYDIR = "~/.config/pi-escal" + "ation/";
+	const p = tmpCfg({ friends: [
+		{ name: "Flint", baseUrl: "http://a/v1" },
+		{ name: "my model-2", baseUrl: "http://b/v1", keyFile: "~/k2" },
+	] });
+	const [a, b] = loadFriends(p);
+	assert.equal(a.name, "flint");
+	assert.equal(a.keyFile, KEYDIR + "flint_key"); // per-name default
+	assert.equal(b.name, "my_model_2"); // sanitized so ask_<name> is a valid tool name
+	assert.equal(b.keyFile, "~/k2"); // explicit wins
+	assert.equal(b.baseUrl, "http://b/v1");
+});
+
+test("friends: missing config file -> single flint on defaults", () => {
+	const friends = loadFriends("/nonexistent/dir/config.json");
+	assert.equal(friends.length, 1);
+	assert.equal(friends[0].name, "flint");
+	assert.equal(friends[0].baseUrl, DEFAULTS.baseUrl);
 });
