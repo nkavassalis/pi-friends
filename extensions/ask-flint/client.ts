@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { TunnelConfig } from "./tunnel.ts";
 
 export interface FlintConfig {
 	baseUrl: string; // OpenAI-compatible base, e.g. http://127.0.0.1:11501/v1 (the SSH tunnel to the Mac)
@@ -14,6 +15,7 @@ export interface FlintConfig {
 	topK: number;
 	timeoutMin: number; // whole request, queue wait excluded
 	maxBriefChars: number; // longer briefs are refused (the Mac prefills ~600 tok/s), never cut
+	tunnel?: TunnelConfig; // set: the tool opens/repairs the SSH tunnel itself before each call (tunnel.ts)
 }
 
 export const DEFAULTS: FlintConfig = {

@@ -4,6 +4,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { askFlint, checkBrief, loadConfig, Queue, readKey } from "./client.ts";
+import { ensureTunnel } from "./tunnel.ts";
 
 const SYSTEM =
 	"You are consulted by another coding agent on a hard problem. The brief below is all the context you have. " +
@@ -37,13 +38,17 @@ const askFlintTool = defineTool({
 		const key = readKey(cfg);
 		const ahead = queue.length;
 		if (ahead > 0) onUpdate?.({ content: [{ type: "text", text: `Waiting for ${ahead} earlier ask_flint call(s)...` }], details: undefined });
-		const r = await queue.run(() =>
-			askFlint(cfg, key, params.brief, signal, (p) =>
+		const r = await queue.run(async () => {
+			if (cfg.tunnel) {
+				const t = await ensureTunnel(cfg.tunnel);
+				if (t !== "up") onUpdate?.({ content: [{ type: "text", text: `SSH tunnel to ${cfg.tunnel.host} ${t}` }], details: undefined });
+			}
+			return askFlint(cfg, key, params.brief, signal, (p) =>
 				onUpdate?.({
 					content: [{ type: "text", text: `Flint thinking: ${Math.round(p.seconds)} s, ${p.reasoningChars} reasoning chars, ${p.answerChars} answer chars` }],
 					details: undefined,
-				}), SYSTEM),
-		);
+				}), SYSTEM);
+		});
 		const stats = `[ask_flint: ${Math.round(r.seconds)} s, ${r.promptTokens} prompt tokens (${r.cachedTokens} cached), ${r.completionTokens} completion tokens, finish=${r.finish}]`;
 		if (!r.answer) {
 			throw new Error(
