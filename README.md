@@ -36,7 +36,10 @@ Measured with the same problems, seeds and sandbox on both machines (32K budget,
   - The tool sends the brief to the Mac as a fresh one-turn chat, with no session history.
   - Only Flint's final answer comes back, not its reasoning. Qwen applies it and runs the tests.
   - Requests queue on the tool side, with a timeout, because the Mac serves one at a time.
-- **When to call it:** after Qwen fails the same test twice, or when the user asks.
+- **When to call it:** after Qwen fails the same test twice, when the user asks, or to review a
+  proposed design/plan before implementation starts (added 2026-10-29; **unmeasured** — Flint's
+  edge is measured on competitive programming, not design review, so its critiques are a strong
+  second opinion that Qwen weighs, not an authority).
 - **Never switch the session's model to Flint.** pi would re-send the whole history, which at 100K takes 6.5–9 min to prefill
   on the Mac.
 

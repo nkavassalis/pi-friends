@@ -20,10 +20,12 @@ const askFlintTool = defineTool({
 		"Hand a hard, self-contained problem to Recursive Flint, a stronger competitive-programming reasoner running on another " +
 		"machine. It sees ONLY the brief, not this conversation or the files, so the brief must contain everything: the goal, the " +
 		"relevant code, the exact failing test or error output, constraints (language, signatures, limits) and what was already " +
-		"tried. Slow: expect 1-10 minutes. Returns Flint's answer; verify it (apply it, run the tests) before relying on it.",
-	promptSnippet: "ask_flint: hand a hard self-contained algorithm or debugging problem to a stronger reasoning model (slow)",
+		"tried. Also useful as a design reviewer: send the plan plus its constraints and invariants and ask for flaws ranked by " +
+		"severity. Slow: expect 1-10 minutes. Returns Flint's answer; verify it (apply it, run the tests) before relying on it.",
+	promptSnippet: "ask_flint: hand a hard self-contained algorithm or debugging problem (or a plan to review) to a stronger reasoning model (slow)",
 	promptGuidelines: [
 		"Use ask_flint for hard algorithmic problems, or after two failed attempts at the same failing test. Do not use it for routine edits, file lookups or questions about this repository.",
+		"Use it to review a proposed design or feature plan before implementation starts when the user asks for a second opinion: paste the plan, the interfaces it touches, the constraints and invariants it must respect, and ask for flaws ranked by severity, concrete alternatives, and tests that are missing. You decide whether to adopt the critique; say what you took and what you rejected and why.",
 		"Write the ask_flint brief so that a strong engineer who has never seen this repository could solve it: paste the code and error output, do not refer to files by path alone.",
 	],
 	parameters: Type.Object({
