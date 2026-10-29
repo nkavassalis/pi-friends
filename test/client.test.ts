@@ -78,8 +78,8 @@ test("HTTP error surfaces status and body", async () => {
 	}
 });
 
-test("unreachable server names the tunnel", async () => {
-	await assert.rejects(askFlint({ ...DEFAULTS, baseUrl: "http://127.0.0.1:1/v1" }, "k", "b"), /SSH tunnel/);
+test("unreachable server names the URL", async () => {
+	await assert.rejects(askFlint({ ...DEFAULTS, baseUrl: "http://127.0.0.1:1/v1" }, "k", "b"), /cannot reach Flint at http:\/\/127\.0\.0\.1:1\/v1/);
 });
 
 test("timeout aborts a stalled stream", async () => {

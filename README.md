@@ -5,7 +5,8 @@ Flint on a Mac mini is called for hard, self-contained reasoning problems.
 
 **Status 2026-10-29:**
 - `ask_flint` is written (`extensions/ask-flint/`), and its offline tests pass.
-- First end-to-end run: pi with Qwen calling Flint on the Mac through the tunnel (see "Tested").
+- First end-to-end run: pi with Qwen calling Flint on the Mac through the SSH tunnel (see "Tested").
+- Since 2026-10-29 Flint is reached over the LAN through a relay on the Mac, which starts at boot along with Flint (see "Install and run").
 - Not installed into pi globally yet, and not measured on real tasks.
 
 ## Why
@@ -42,29 +43,32 @@ Measured with the same problems, seeds and sandbox on both machines (32K budget,
 ## Install and run
 
 ```bash
-cp .env.example .env            # MAC, MAC_SSH_KEY, LOCAL_PORT (never commit)
+cp .env.example .env            # MAC, MAC_SSH_KEY, FLINT_URL (never commit)
 scripts/install.sh              # links the extension into ~/.pi/agent/extensions, fetches the key, writes the config
 pi --extension extensions/ask-flint/index.ts   # or: try it for one run without installing
 scripts/install.sh --uninstall
 ```
-**The tunnel is managed by the tool, not a service.** The pi machine is a container with no service manager (no systemd, no cron).
-- **Before every call**, `ask_flint` checks `127.0.0.1:11501`.
-- **If nothing listens there**, it starts `ssh -N -L` itself, detached, so the tunnel outlives pi.
-- **If the address in the config changed**, it kills its old ssh and starts a new one.
-- **State** (pid and settings) is kept in `~/.config/pi-escalation/tunnel.json`.
-- **`scripts/tunnel.sh`** is the manual alternative. If one started by hand already holds the port, the tool leaves it alone.
+**Flint is reached over the LAN (2026-10-29).** `rec serve` binds loopback only, so the Mac runs a small TCP relay in front of
+it: LAN `:11502` to `127.0.0.1:11500`. Both run as user LaunchAgents and start at boot (the Mac logs in automatically). They
+live in mac-tuning: `scripts/flint_relay.py` and `scripts/install_launchd.sh`. rec's API key still guards every request (401
+without it). The traffic is plain HTTP on the LAN.
 
-**To change the Mac's address,** edit `tunnel.host` in `~/.config/pi-escalation/config.json` (`"user@<new-ip-or-name>"`). The next call
-reconnects there; nothing needs restarting. `.env` is only read by `install.sh` when it first writes that config.
+**To change the Mac's address,** edit `baseUrl` in `~/.config/pi-escalation/config.json` (`http://<new-ip-or-name>:11502/v1`).
+The next call uses it; nothing needs restarting. `.env` is only read by `install.sh` when it first writes that config.
 
-The Mac side is mac-tuning's `scripts/serve.sh` (`rec serve` on 127.0.0.1:11500, API key on).
+**Optional SSH tunnel instead** (from before the relay, kept for a Mac without it): add a `tunnel` block and point `baseUrl`
+at `127.0.0.1:<localPort>`.
+- Before every call, `ask_flint` starts `ssh -N -L` if nothing listens on the local port, and restarts it if the host changed.
+  This box has no service manager, so the tool manages the tunnel itself.
+- State is kept in `~/.config/pi-escalation/tunnel.json`.
+- `scripts/tunnel.sh` is the manual alternative.
 
 Settings live in `~/.config/pi-escalation/config.json`, which overrides the defaults in `client.ts`:
 
 | Setting | Default | Notes |
 |---|---|---|
-| `baseUrl` | `http://127.0.0.1:11501/v1` | |
-| `tunnel` | from `.env` | `host` (the Mac's ssh target), `identity`, `localPort`, `remotePort`; omit to manage the tunnel yourself |
+| `baseUrl` | `http://127.0.0.1:11501/v1` | `install.sh` writes `FLINT_URL` here (the Mac's LAN relay) |
+| `tunnel` | unset | optional: `host` (the Mac's ssh target), `identity`, `localPort`, `remotePort` |
 | `maxTokens` | 32768 | |
 | `temperature` / `topP` / `topK` | 0.6 / 0.95 / 20 | |
 | `timeoutMin` | 20 | |

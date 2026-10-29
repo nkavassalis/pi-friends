@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { TunnelConfig } from "./tunnel.ts";
 
 export interface FlintConfig {
-	baseUrl: string; // OpenAI-compatible base, e.g. http://127.0.0.1:11501/v1 (the SSH tunnel to the Mac)
+	baseUrl: string; // OpenAI-compatible base, e.g. http://<mac>:11502/v1 (mac-tuning's LAN relay in front of rec)
 	model: string;
 	keyFile: string; // file holding the server's API key
 	maxTokens: number; // reasoning + answer; Flint's card asks for >= 32K
@@ -113,7 +113,7 @@ export async function askFlint(
 			signal: sig,
 		});
 	} catch (e: any) {
-		throw new Error(timeout.aborted ? `ask_flint: timed out after ${cfg.timeoutMin} min` : `ask_flint: cannot reach Flint at ${cfg.baseUrl} (is the SSH tunnel up?): ${e.message}`);
+		throw new Error(timeout.aborted ? `ask_flint: timed out after ${cfg.timeoutMin} min` : `ask_flint: cannot reach Flint at ${cfg.baseUrl} (is the Mac up, and is baseUrl right?): ${e.message}`);
 	}
 	if (!res.ok || !res.body) {
 		const text = await res.text().catch(() => "");

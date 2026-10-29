@@ -13,7 +13,7 @@ Rules:
 |---|---|
 | `extensions/ask-flint/index.ts` | the pi extension: registers `ask_flint`, queue, result and usage |
 | `extensions/ask-flint/client.ts` | config, one-at-a-time queue, the streamed request to Flint, brief check (no pi imports) |
-| `extensions/ask-flint/tunnel.ts` | on-demand SSH tunnel: start if down, restart on a host change (no service manager on this box) |
+| `extensions/ask-flint/tunnel.ts` | optional on-demand SSH tunnel (used only with a `tunnel` config block; the default since 2026-10-29 is the Mac's LAN relay) |
 | `test/client.test.ts`, `test/tunnel.test.ts`, `test/fake_ssh.mjs` | offline tests: fake rec-shaped SSE server, fake ssh |
 | `scripts/tunnel.sh` | manual alternative: loopback-only SSH tunnel to the Mac, self-restarting |
 | `scripts/install.sh [--uninstall]` | symlink into `~/.pi/agent/extensions`, fetch the key, write the default config |
