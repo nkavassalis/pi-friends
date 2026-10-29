@@ -6,6 +6,9 @@
 // own queue (each server serves one generation at a time). Design and measurements: README.md.
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { askFlint, checkBrief, loadFriends, Queue, readKey, type FlintConfig } from "./client.ts";
 import { ensureTunnel } from "./tunnel.ts";
 
@@ -93,4 +96,28 @@ function makeTool(f: FlintConfig) {
 
 export default function (pi: ExtensionAPI) {
 	for (const f of loadFriends()) pi.registerTool(makeTool(f));
+
+	// /friends — who is configured, and which tools are live. Status only: the key FILE's
+	// presence is reported, its contents never are (same rule as meta-guard's FORBIDDEN list).
+	pi.registerCommand("friends", {
+		description: "List configured friends (escalation models): tool, endpoint, model, key status",
+		handler: async (_args, ctx) => {
+			const cur = loadFriends(); // fresh read: config edits show up without a restart
+			const lines = [`${cur.length} friend(s) configured — every one is an active tool (no single "current" friend):`];
+			for (const f of cur) {
+				const kf = f.keyFile?.startsWith("~/") ? join(homedir(), f.keyFile.slice(2)) : f.keyFile ?? "";
+				const key = kf && existsSync(kf) ? (readFileSync(kf, "utf8").trim() ? "key ok" : "key EMPTY") : "key MISSING";
+				const bits = [
+					`tool ask_${f.name}`,
+					f.baseUrl,
+					`model=${f.model}`,
+					key,
+					f.tunnel ? `tunnel via ${f.tunnel.host}` : "direct",
+					f.system ? "custom persona" : "default persona",
+				];
+				lines.push(`  ${f.name}: ${bits.join(" | ")}`);
+			}
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
 }
