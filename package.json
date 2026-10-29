@@ -1,0 +1,21 @@
+{
+  "name": "pi-friends",
+  "version": "1.0.0",
+  "description": "pi extension: consult other models on hard problems. Each friend (any OpenAI-compatible endpoint) gets its own ask_<name> tool; briefs are self-contained one-turn exchanges, answers come back without reasoning transcripts.",
+  "keywords": ["pi-package", "pi-extension", "pi", "llm", "coding-agent", "escalation"],
+  "license": "MIT",
+  "author": "Nick Kavassalis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nkavassalis/pi-friends.git"
+  },
+  "homepage": "https://github.com/nkavassalis/pi-friends#readme",
+  "bugs": { "url": "https://github.com/nkavassalis/pi-friends/issues" },
+  "pi": {
+    "extensions": ["./extensions/friends/index.ts"]
+  },
+  "files": ["extensions/friends", "README.md", "LICENSE", "AGENTS.md"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  }
+}

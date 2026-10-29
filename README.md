@@ -1,115 +1,105 @@
-# pi-escalation
+# pi-friends
 
-Use two local models from one [pi](https://pi.dev/) agent. Qwen on the 2× DGX Spark cluster does the agent loop. Recursive
-Flint on a Mac mini is called for hard, self-contained reasoning problems.
+A [pi](https://pi.dev/) extension for consulting **other models on hard problems** — without ever
+handing them your session. Each *friend* is any OpenAI-compatible chat endpoint; each gets its own
+`ask_<name>` tool. The agent writes a self-contained brief, the friend sees **only the brief** (no
+conversation history, no files), and only the final answer comes back.
 
-**Status 2026-10-29:**
-- `ask_flint` is written (`extensions/ask-flint/`), and its offline tests pass.
-- First end-to-end run: pi with Qwen calling Flint on the Mac through the SSH tunnel (see "Tested").
-- Since 2026-10-29 Flint is reached over the LAN through a relay on the Mac, which starts at boot along with Flint (see "Install and run").
-- Not installed into pi globally yet, and not measured on real tasks.
+```json
+{ "friends": [
+  { "name": "flint", "baseUrl": "http://<reasoning-box>:11502/v1", "model": "flint" },
+  { "name": "sage",  "baseUrl": "http://<review-box>:8000/v1",  "model": "sage",
+    "system": "You review plans. Answer with flaws ranked by severity." }
+]}
+```
+→ tools `ask_flint` and `ask_sage`, each with its own queue, persona, description and key file.
+Adding a friend is a config entry plus a key file — no code.
 
-## Why
+## Why this shape
 
-Measured with the same problems, seeds and sandbox on both machines (32K budget, T=0.6; see
-[spark-tuning](https://github.com/nkavassalis/spark-tuning) COMPARISON.md / FLINT.md and
-[mac-tuning](https://github.com/nkavassalis/mac-tuning) FLINT.md):
+Big-model escalation usually means switching the session's model, which re-sends the whole
+conversation. That is slow (prefill dominates on small hardware), leaks the entire history to a
+third endpoint, and pollutes the friend's context with tool-call noise. Friends invert it:
 
-| | Qwen FP4-Local `medium` (Spark) | Flint int4 (Mac) | solved by either |
-|---|---|---|---|
-| LiveCodeBench (80) | 51.2% | **71.2%** (16 won / 0 lost, p<0.001) | 71.2% |
-| post-cutoff AtCoder (147) | 53.7% | **68.0%** | 72.1% |
-| HumanEval+ (164) | **95.7%** (16K) | 91.5% (Qwen better, p=0.039) | |
+- **One turn, brief only.** The friend prefills ~1–16K tokens you *chose*, not 100K you didn't.
+- **Answer, not transcript.** Reasoning tokens are counted for stats but never returned; the agent
+  gets the solution, applies it, and runs the tests. (Verification is the agent's job — a friend's
+  answer is a strong suggestion, not authority.)
+- **Good briefs are a skill, so the tool teaches it.** The tool description tells the agent what a
+  brief must contain (goal, code pasted, failing output, constraints, what was tried) and refuses
+  briefs over `maxBriefChars` instead of silently truncating them.
+- **Per-friend queues with progress.** Local servers (llama.cpp, rec, vLLM single-worker) serve one
+  generation at a time; the tool serializes and reports "waiting for N earlier call(s)".
 
-- **On hard problems Flint solves almost everything Qwen solves.** The gain comes from sending hard problems to Flint, not from
-  racing both models.
-- **Qwen is the better everyday agent:** better HumanEval+, several sessions at once, and ~2,800 tok/s prefill with free warm
-  prefix hits.
-- **Flint on the Mac is fast to answer but slow to read a prompt.** It decodes 114–120 tok/s at 1K, but prefills ~600 tok/s,
-  falling to ~250 at 100K, and serves one request at a time.
+A measured example of the trade-off (same problems, seeds and sandbox on both machines; details in
+[spark-tuning](https://github.com/nkavassalis/spark-tuning) and
+[mac-tuning](https://github.com/nkavassalis/mac-tuning)): a local agent model (Qwen FP4, 2× GB10)
+solves ~51% of hard LiveCodeBench problems; a reasoning model on a Mac mini (Recursive Flint int4)
+solves ~71% of the same set — and solves almost everything the agent model solves. Routing the hard
+problems to the friend beat racing both models. **Your numbers will differ; measure before you
+trust any friend.** Flint's edge is measured on competitive programming; its use as a *design
+reviewer* (which the tool also supports) is promising but unmeasured.
 
-## Design
-
-- **Qwen stays pi's default model** for every session.
-- **An `ask_flint` tool (pi extension):**
-  - Qwen writes a brief: the problem, the relevant code, the failing test and the constraints, ~16K tokens at most.
-  - The tool sends the brief to the Mac as a fresh one-turn chat, with no session history.
-  - Only Flint's final answer comes back, not its reasoning. Qwen applies it and runs the tests.
-  - Requests queue on the tool side, with a timeout, because the Mac serves one at a time.
-- **When to call it:** after Qwen fails the same test twice, when the user asks, or to review a
-  proposed design/plan before implementation starts (added 2026-10-29; **unmeasured** — Flint's
-  edge is measured on competitive programming, not design review, so its critiques are a strong
-  second opinion that Qwen weighs, not an authority).
-- **Never switch the session's model to Flint.** pi would re-send the whole history, which at 100K takes 6.5–9 min to prefill
-  on the Mac.
-
-## Install and run
+## Install
 
 ```bash
-cp .env.example .env            # MAC, MAC_SSH_KEY, FLINT_URL (never commit)
-scripts/install.sh              # links the extension into ~/.pi/agent/extensions, fetches the key, writes the config
-pi --extension extensions/ask-flint/index.ts   # or: try it for one run without installing
-scripts/install.sh --uninstall
+pi install git:github.com/nkavassalis/pi-friends@v1.0.0     # or npm: pi install npm:pi-friends
+# or from a clone, for development:
+pi --extension extensions/friends/index.ts                  # one run, nothing installed globally
 ```
-**Flint is reached over the LAN (2026-10-29).** `rec serve` binds loopback only, so the Mac runs a small TCP relay in front of
-it: LAN `:11502` to `127.0.0.1:11500`. Both run as user LaunchAgents and start at boot (the Mac logs in automatically). They
-live in mac-tuning: `scripts/flint_relay.py` and `scripts/install_launchd.sh`. rec's API key still guards every request (401
-without it). The traffic is plain HTTP on the LAN.
 
-**To change the Mac's address,** edit `baseUrl` in `~/.config/pi-escalation/config.json` (`http://<new-ip-or-name>:11502/v1`).
-The next call uses it; nothing needs restarting. `.env` is only read by `install.sh` when it first writes that config.
+Then write `~/.config/pi-friends/config.json` (see the shape above) and a key file per friend that
+auths: `~/.config/pi-friends/<name>_key` (mode 600; contents never displayed by anything here).
+`/friends` inside pi lists configured friends — tool, endpoint, model, key status, tunnel/direct.
+Config is re-read per call, so `baseUrl`/key edits take effect without a restart; a **new friend**
+needs a pi restart (tools register at startup).
 
-**Optional SSH tunnel instead** (from before the relay, kept for a Mac without it): add a `tunnel` block and point `baseUrl`
-at `127.0.0.1:<localPort>`.
-- Before every call, `ask_flint` starts `ssh -N -L` if nothing listens on the local port, and restarts it if the host changed.
-  This box has no service manager, so the tool manages the tunnel itself.
-- State is kept in `~/.config/pi-escalation/tunnel.json`.
-- `scripts/tunnel.sh` is the manual alternative.
+If you host Flint with [Recursive's `rec`](https://github.com/recursive-org) on a Mac,
+`scripts/install-flint.sh` provisions that one friend (fetches the key over SSH, writes the config);
+`scripts/tunnel-flint.sh` is the manual SSH-tunnel fallback. Everything else in this repo is
+friend-agnostic.
 
-Settings live in `~/.config/pi-escalation/config.json`, which overrides the defaults in `client.ts`:
+## Settings
 
-**Friends (since 2026-10-29).** The config is either the single-friend shape above (treated as friend
-`flint` — existing files need no change) or `{"friends":[{...}, ...]}`: one entry per model, each
-registering its own `ask_<name>` tool with its own queue, persona (`system`), description and
-guidelines (`{{tool}}` is replaced with the tool name). Names are sanitized to `[a-z0-9_]`; each friend's
-`keyFile` defaults to `~/.config/pi-escalation/<name>_key`. A friend is any OpenAI-compatible
-chat endpoint — adding one is a config entry plus a key file, no code. New friend = new egress:
-that is Nick's call (house rules), and `~/meta/scripts/model-probe.py --key-file` works against it.
+`~/.config/pi-friends/config.json` — either `{"friends":[{...}, ...]}` or a single friend inline
+(legacy shape; loads as one friend named `friend`). Unknown keys are passed through; missing keys
+take the defaults in `client.ts`.
 
 | Setting | Default | Notes |
 |---|---|---|
-| `name` | `flint` | friend name; the tool is `ask_<name>` (sanitized to `[a-z0-9_]`) |
-| `baseUrl` | `http://127.0.0.1:11501/v1` | `install.sh` writes `FLINT_URL` here (the Mac's LAN relay) |
-| `tunnel` | unset | optional: `host` (the Mac's ssh target), `identity`, `localPort`, `remotePort` |
-| `maxTokens` | 32768 | |
-| `temperature` / `topP` / `topK` | 0.6 / 0.95 / 20 | |
-| `timeoutMin` | 20 | |
-| `maxBriefChars` | 64000 | Longer briefs are refused with an error telling Qwen to shorten them, never silently cut. |
+| `name` | `friend` | tool becomes `ask_<name>` (sanitized to `[a-z0-9_]`) |
+| `baseUrl` | `http://127.0.0.1:11501/v1` | OpenAI-compatible base URL |
+| `model` | `friend` | sent as `model` in the request |
+| `keyFile` | `~/.config/pi-friends/<name>_key` | bearer token; read at call time, never logged |
+| `system` | built-in | one-turn persona; set per friend (e.g. reviewer vs solver) |
+| `description` / `label` / `guidelines` | built-in | override the tool's prompt text; `{{tool}}` is substituted |
+| `maxTokens` | 32768 | reasoning **and** answer share this; reasoning-only exhaustion is reported as such |
+| `temperature` / `topP` / `topK` | 0.6 / 0.95 / 20 | the measured-best setting for flint; tune per friend |
+| `timeoutMin` | 20 | whole request, queue wait excluded |
+| `maxBriefChars` | 64000 | longer briefs are refused with advice, never truncated |
+| `tunnel` | unset | optional `{host, identity, localPort, remotePort}`: the tool opens/repairs a loopback `ssh -N -L` itself — for friends on machines that aren't always reachable |
 
-- **The tool adds a description and two guideline lines to Qwen's system prompt.** The first request of every session started
-  or resumed after installing therefore prefills from scratch once (PI.md in spark-tuning: a changed prompt is a cold prefix).
-- **The key is read from `~/.config/pi-escalation/flint_key`** (mode 600) at call time.
+## Privacy & safety
 
-## Tested (2026-10-29, one run)
-
-`pi --extension extensions/ask-flint/index.ts --mode json` was run on the live Qwen FP4-Local, with the Flint int4 server on the
-Mac reached through the tunnel. The task: an O(n + k) rewrite of a quadratic `count_pairs`.
-1. Qwen read the file, wrote a self-contained brief with the code pasted in, and called `ask_flint` once.
-2. Flint answered in 43 s: 372 prompt tokens, 4,688 completion tokens, mostly reasoning, which was not returned to Qwen.
-3. The answer was a correct counting-by-remainder solution.
-4. Qwen checked it against the original on random inputs before replying.
-
-This is a smoke test that the plumbing works. It is not evidence of uplift; that is the task comparison under "Open".
+- The friend receives **only** the brief and the system persona. No session history, no file paths
+  unless the agent pasted them, no environment variables.
+- Keys live in 600-mode files and are read at call time; nothing prints their contents.
+- Briefs travel as plain HTTP by default — fine on a trusted LAN, put TLS or a tunnel in front of
+  anything else. Treat anything in a brief as disclosed to that endpoint's operator.
+- The tool refuses empty and oversized briefs; it never silently cuts.
 
 ## Tests
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # offline: fake rec SSE server + fake ssh; 13 tests
+node --experimental-strip-types --test test/*.test.ts   # offline: fake OpenAI-compatible SSE server + fake ssh
 bash -n scripts/*.sh
 ```
-Run pi with `< /dev/null` from scripts. Piped stdin becomes part of the prompt, so pi waits for it to close.
 
-## Open
+16 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
+final empty-choices chunk), request shape and auth headers, timeouts, abort, the queue, the brief
+limit, config loading (legacy + friends shapes, name sanitizing, per-name key defaults) and the
+tunnel state machine.
 
-1. Measure whether escalation helps: 10–20 real tasks, with and without `ask_flint`, comparing tests passed and wall-clock time.
-   Nothing here is measured on agent tasks yet; the numbers above are benchmarks.
+## License
+
+MIT

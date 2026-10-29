@@ -1,4 +1,4 @@
-// Offline tests for extensions/ask-flint/client.ts against a fake OpenAI-compatible SSE server shaped like rec's
+// Offline tests for extensions/friends/client.ts against a fake OpenAI-compatible SSE server shaped like rec's
 // (reasoning in delta.reasoning, answer in delta.content, usage in a final chunk with empty choices).
 //   node --experimental-strip-types --test test/
 import { test } from "node:test";
@@ -7,7 +7,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { askFlint, checkBrief, DEFAULTS, loadConfig, loadFriends, Queue, readKey } from "../extensions/ask-flint/client.ts";
+import { askFriend, checkBrief, DEFAULTS, loadConfig, loadFriends, Queue, readKey } from "../extensions/friends/client.ts";
 
 type Handler = (body: any, res: any) => void;
 
@@ -40,7 +40,7 @@ test("streams: answer from content, reasoning counted not returned, usage parsed
 		sse(res, [{ role: "assistant", reasoning: "think " }, { reasoning: "more" }, { content: "def f(): " }, { content: "return 1" }]),
 	);
 	try {
-		const r = await askFlint({ ...DEFAULTS, baseUrl: url }, "k123", "solve it", undefined, undefined, "sys");
+		const r = await askFriend({ ...DEFAULTS, baseUrl: url }, "k123", "solve it", undefined, undefined, "sys");
 		assert.equal(r.answer, "def f(): return 1");
 		assert.equal(r.reasoningChars, 10);
 		assert.equal(r.finish, "stop");
@@ -58,7 +58,7 @@ test("streams: answer from content, reasoning counted not returned, usage parsed
 test("length finish with no answer is reported as such", async () => {
 	const { url, server } = await serve((_b, res) => sse(res, [{ reasoning: "x".repeat(100) }], "length"));
 	try {
-		const r = await askFlint({ ...DEFAULTS, baseUrl: url }, "k", "b");
+		const r = await askFriend({ ...DEFAULTS, baseUrl: url }, "k", "b");
 		assert.equal(r.answer, "");
 		assert.equal(r.finish, "length");
 	} finally {
@@ -72,14 +72,14 @@ test("HTTP error surfaces status and body", async () => {
 		res.end("bad key");
 	});
 	try {
-		await assert.rejects(askFlint({ ...DEFAULTS, baseUrl: url }, "k", "b"), /HTTP 401: bad key/);
+		await assert.rejects(askFriend({ ...DEFAULTS, baseUrl: url }, "k", "b"), /HTTP 401: bad key/);
 	} finally {
 		server.close();
 	}
 });
 
 test("unreachable server names the URL", async () => {
-	await assert.rejects(askFlint({ ...DEFAULTS, baseUrl: "http://127.0.0.1:1/v1" }, "k", "b"), /cannot reach flint at http:\/\/127\.0\.0\.1:1\/v1/);
+	await assert.rejects(askFriend({ ...DEFAULTS, baseUrl: "http://127.0.0.1:1/v1" }, "k", "b"), /cannot reach friend at http:\/\/127\.0\.0\.1:1\/v1/);
 });
 
 test("timeout aborts a stalled stream", async () => {
@@ -88,7 +88,7 @@ test("timeout aborts a stalled stream", async () => {
 		res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning: "..." } }] })}\n\n`); // then nothing
 	});
 	try {
-		await assert.rejects(askFlint({ ...DEFAULTS, baseUrl: url, timeoutMin: 0.01 }, "k", "b"), /timed out/);
+		await assert.rejects(askFriend({ ...DEFAULTS, baseUrl: url, timeoutMin: 0.01 }, "k", "b"), /timed out/);
 	} finally {
 		server.closeAllConnections();
 		server.close();
@@ -99,7 +99,7 @@ test("caller abort stops the request", async () => {
 	const { url, server } = await serve((_b, res) => res.writeHead(200)); // headers, no body
 	try {
 		const ac = new AbortController();
-		const p = askFlint({ ...DEFAULTS, baseUrl: url }, "k", "b", ac.signal);
+		const p = askFriend({ ...DEFAULTS, baseUrl: url }, "k", "b", ac.signal);
 		setTimeout(() => ac.abort(), 50);
 		await assert.rejects(p);
 	} finally {
@@ -164,17 +164,17 @@ const tmpCfg = (obj: unknown) => {
 	return p;
 };
 
-test("friends: legacy single-friend config still loads as flint", () => {
+test("friends: legacy single-friend config loads as friend", () => {
 	const p = tmpCfg({ baseUrl: "http://h:1/v1" });
 	const friends = loadFriends(p);
 	assert.equal(friends.length, 1);
-	assert.equal(friends[0].name, "flint");
+	assert.equal(friends[0].name, "friend");
 	assert.equal(friends[0].baseUrl, "http://h:1/v1");
 	assert.equal(friends[0].maxTokens, DEFAULTS.maxTokens);
 });
 
 test("friends: friends[] entries get defaults, keyFile per name, sanitized tool name", () => {
-	const KEYDIR = "~/.config/pi-escal" + "ation/";
+	const KEYDIR = "~/.config/pi-friend" + "s/";
 	const p = tmpCfg({ friends: [
 		{ name: "Flint", baseUrl: "http://a/v1" },
 		{ name: "my model-2", baseUrl: "http://b/v1", keyFile: "~/k2" },
@@ -187,9 +187,9 @@ test("friends: friends[] entries get defaults, keyFile per name, sanitized tool 
 	assert.equal(b.baseUrl, "http://b/v1");
 });
 
-test("friends: missing config file -> single flint on defaults", () => {
+test("friends: missing config file -> single friend on defaults", () => {
 	const friends = loadFriends("/nonexistent/dir/config.json");
 	assert.equal(friends.length, 1);
-	assert.equal(friends[0].name, "flint");
+	assert.equal(friends[0].name, "friend");
 	assert.equal(friends[0].baseUrl, DEFAULTS.baseUrl);
 });

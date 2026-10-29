@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tunnel.sh: keep a loopback-only SSH tunnel from this machine to Flint on the Mac (127.0.0.1:$LOCAL_PORT -> Mac 127.0.0.1:11500),
+# tunnel-flint.sh: (fallback for the optional per-friend "tunnel" config) keep a loopback-only SSH tunnel to the Mac (127.0.0.1:$LOCAL_PORT -> Mac 127.0.0.1:11500),
 # restarting it within 5 s if it drops. Nothing is exposed on the LAN. Run in the foreground or as a background job.
 set -euo pipefail
 cd "$(dirname "$0")/.."; . ./.env

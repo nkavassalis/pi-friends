@@ -1,7 +1,7 @@
-// On-demand SSH tunnel to the Mac for ask_flint. This machine has no service manager (a container with sshd as PID 1), so
+// On-demand SSH tunnel for a friend behind SSH (e.g. a laptop that is not always on the LAN). This machine has no service manager (a container with sshd as PID 1), so
 // instead of a service the tool checks the tunnel before every call: it starts ssh if nothing listens on the local port, and
 // restarts it if the host in the config changed since it was started. State (pid + the settings it was started with) lives in
-// ~/.config/pi-escalation/tunnel.json. No pi imports (tested by test/tunnel.test.ts).
+// ~/.config/pi-friends/tunnel.json. No pi imports (tested by test/tunnel.test.ts).
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -88,5 +88,5 @@ export async function ensureTunnel(t: TunnelConfig, statePath = STATE_PATH, wait
 	try {
 		child.kill();
 	} catch {}
-	throw new Error(`ask_flint: could not open the SSH tunnel to ${t.host} (${exited !== null ? `ssh exited ${exited}` : "timed out"}): ${err.trim().slice(0, 300)}`);
+	throw new Error(`friends: could not open the SSH tunnel to ${t.host} (${exited !== null ? `ssh exited ${exited}` : "timed out"}): ${err.trim().slice(0, 300)}`);
 }

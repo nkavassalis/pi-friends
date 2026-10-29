@@ -1,4 +1,4 @@
-// Offline tests for extensions/ask-flint/tunnel.ts with a fake ssh (test/fake_ssh.mjs).
+// Offline tests for extensions/friends/tunnel.ts with a fake ssh (test/fake_ssh.mjs).
 //   node --experimental-strip-types --test test/*.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureTunnel, portOpen } from "../extensions/ask-flint/tunnel.ts";
+import { ensureTunnel, portOpen } from "../extensions/friends/tunnel.ts";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fake_ssh.mjs");
 

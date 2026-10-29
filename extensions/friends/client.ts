@@ -1,21 +1,21 @@
-// Flint client for the ask_flint tool: config, a one-at-a-time queue, and one streamed chat request.
+// Friend client: config, a one-at-a-time queue, and one streamed chat request.
 // No pi imports, so `node --test` can run it (test/client.test.ts) against a fake server.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { TunnelConfig } from "./tunnel.ts";
 
-export interface FlintConfig {
-	name?: string; // friend name; the tool is ask_<name>. Default "flint" (the original single-friend shape)
+export interface FriendConfig {
+	name?: string; // friend name; the tool is ask_<name>. Default "friend" (a legacy single-friend config loads as one friend named "friend")
 	baseUrl: string; // OpenAI-compatible base, e.g. http://<mac>:11502/v1 (mac-tuning's LAN relay in front of rec)
 	model: string;
 	keyFile: string; // file holding the server's API key
-	maxTokens: number; // reasoning + answer; Flint's card asks for >= 32K
+	maxTokens: number; // reasoning + answer; reasoning models need a large budget
 	temperature: number;
 	topP: number;
 	topK: number;
 	timeoutMin: number; // whole request, queue wait excluded
-	maxBriefChars: number; // longer briefs are refused (the Mac prefills ~600 tok/s), never cut
+	maxBriefChars: number; // longer briefs are refused (slow hosts prefill ~600 tok/s), never cut
 	tunnel?: TunnelConfig; // set: the tool opens/repairs the SSH tunnel itself before each call (tunnel.ts)
 	system?: string; // persona for the one-turn chat (index.ts has a default)
 	description?: string; // tool description override
@@ -23,65 +23,73 @@ export interface FlintConfig {
 	guidelines?: string[]; // prompt-guideline overrides; {{tool}} is replaced with the tool name
 }
 
-export const DEFAULTS: FlintConfig = {
-	name: "flint",
+export const DEFAULTS: FriendConfig = {
+	name: "friend",
 	baseUrl: "http://127.0.0.1:11501/v1",
-	model: "flint",
-	keyFile: "~/.config/pi-escalation/flint_key",
+	model: "friend",
+	keyFile: "~/.config/pi-friends/friend_key",
 	maxTokens: 32768,
-	temperature: 0.6, // Flint's best LiveCodeBench setting (mac-tuning FLINT.md)
+	temperature: 0.6, // measured best for the flint friend (see README benchmarks)
 	topP: 0.95,
 	topK: 20,
 	timeoutMin: 20,
-	maxBriefChars: 64000, // ~16-18K tokens, ~30 s of prefill on the Mac
+	maxBriefChars: 64000, // ~16-18K tokens, ~30 s of prefill on a slow host
 };
 
-export const CONFIG_PATH = join(homedir(), ".config", "pi-escalation", "config.json");
+export const CONFIG_PATH = join(homedir(), ".config", "pi-friends", "config.json");
+const LEGACY_CONFIG_PATH = join(homedir(), ".config", "pi-escalation", "config.json"); // pre-rename location, read-fallback only
+
+/** New location wins; fall back to the pre-rename dir so a half-migrated box still works. */
+function resolveCfg(p: string): string {
+	return p === CONFIG_PATH && !existsSync(p) && existsSync(LEGACY_CONFIG_PATH) ? LEGACY_CONFIG_PATH : p;
+}
 
 const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
-export function loadConfig(path = CONFIG_PATH): FlintConfig {
-	let file: Partial<FlintConfig> = {};
+export function loadConfig(p = CONFIG_PATH): FriendConfig {
+	const path = resolveCfg(p);
+	let file: Partial<FriendConfig> = {};
 	try {
 		file = JSON.parse(readFileSync(path, "utf8"));
 	} catch (e: any) {
-		if (e?.code !== "ENOENT") throw new Error(`ask_flint: cannot read ${path}: ${e.message}`);
+		if (e?.code !== "ENOENT") throw new Error(`friends: cannot read ${path}: ${e.message}`);
 	}
 	return { ...DEFAULTS, ...file };
 }
 
 /**
  * All friends to register. config.json is either the original single-friend shape
- * (treated as friend "flint" — existing installs need no change) or
+ * (loads as one friend named "friend" — existing installs keep working) or
  * {"friends":[{name, baseUrl, ...}, ...]}. Each named friend defaults its keyFile to
- * ~/.config/pi-escalation/<name>_key; names are sanitized to [a-z0-9_] so the tool
+ * ~/.config/pi-friends/<name>_key; names are sanitized to [a-z0-9_] so the tool
  * name ask_<name> is always valid.
  */
-export function loadFriends(path = CONFIG_PATH): FlintConfig[] {
+export function loadFriends(p = CONFIG_PATH): FriendConfig[] {
+	const path = resolveCfg(p);
 	let file: any = {};
 	try {
 		file = JSON.parse(readFileSync(path, "utf8"));
 	} catch (e: any) {
-		if (e?.code !== "ENOENT") throw new Error(`ask: cannot read ${path}: ${e.message}`);
+		if (e?.code !== "ENOENT") throw new Error(`friends: cannot read ${path}: ${e.message}`);
 	}
 	if (Array.isArray(file?.friends) && file.friends.length > 0) {
 		return file.friends.map((f: any) => {
 			const clean = String(f?.name ?? "friend").toLowerCase().replace(/[^a-z0-9_]/g, "_");
-			return { ...DEFAULTS, ...f, name: clean, keyFile: f.keyFile ?? `~/.config/pi-escalation/${clean}_key` } as FlintConfig;
+			return { ...DEFAULTS, ...f, name: clean, keyFile: f.keyFile ?? `~/.config/pi-friends/${clean}_key` } as FriendConfig;
 		});
 	}
 	return [{ ...DEFAULTS, ...file }]; // legacy single-friend config
 }
 
-export function readKey(cfg: FlintConfig): string {
+export function readKey(cfg: FriendConfig): string {
 	try {
 		return readFileSync(expand(cfg.keyFile), "utf8").trim();
 	} catch (e: any) {
-		throw new Error(`ask_flint: cannot read the API key file ${cfg.keyFile}: ${e.message}`);
+		throw new Error(`friends: cannot read the API key file ${cfg.keyFile}: ${e.message}`);
 	}
 }
 
-/** Runs tasks one at a time: rec on the Mac serves a single generation, so parallel calls would only queue there blind. */
+/** Runs tasks one at a time: most local servers serve a single generation, so parallel calls would only queue there blind. */
 export class Queue {
 	private tail: Promise<unknown> = Promise.resolve();
 	private pending = 0;
@@ -98,7 +106,7 @@ export class Queue {
 	}
 }
 
-export interface FlintResult {
+export interface FriendResult {
 	answer: string;
 	reasoningChars: number;
 	finish: string; // "stop" | "length" | ...
@@ -112,14 +120,14 @@ export type Progress = (p: { seconds: number; reasoningChars: number; answerChar
 
 /** One fresh single-turn chat: the brief is the whole context, no session history. Streams so long reasoning never hits a
  *  header timeout; reasoning is counted, not returned. */
-export async function askFlint(
-	cfg: FlintConfig,
+export async function askFriend(
+	cfg: FriendConfig,
 	key: string,
 	brief: string,
 	signal?: AbortSignal,
 	onProgress?: Progress,
 	system?: string,
-): Promise<FlintResult> {
+): Promise<FriendResult> {
 	const t0 = Date.now();
 	const timeout = AbortSignal.timeout(cfg.timeoutMin * 60_000);
 	const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -142,11 +150,11 @@ export async function askFlint(
 			signal: sig,
 		});
 	} catch (e: any) {
-		throw new Error(timeout.aborted ? `ask: timed out after ${cfg.timeoutMin} min` : `ask: cannot reach ${cfg.name ?? "friend"} at ${cfg.baseUrl} (is the server up, and is baseUrl right?): ${e.message}`);
+		throw new Error(timeout.aborted ? `friends: timed out after ${cfg.timeoutMin} min` : `friends: cannot reach ${cfg.name ?? "friend"} at ${cfg.baseUrl} (is the server up, and is baseUrl right?): ${e.message}`);
 	}
 	if (!res.ok || !res.body) {
 		const text = await res.text().catch(() => "");
-		throw new Error(`ask_flint: Flint answered HTTP ${res.status}: ${text.slice(0, 300)}`);
+		throw new Error(`friends: ${cfg.name ?? "friend"} answered HTTP ${res.status}: ${text.slice(0, 300)}`);
 	}
 	let answer = "", reasoningChars = 0, finish = "", buf = "", lastTick = 0;
 	let usage: any = {};
@@ -177,7 +185,7 @@ export async function askFlint(
 			}
 		}
 	} catch (e: any) {
-		if (timeout.aborted) throw new Error(`ask_flint: timed out after ${cfg.timeoutMin} min (${reasoningChars} reasoning chars so far)`);
+		if (timeout.aborted) throw new Error(`friends: timed out after ${cfg.timeoutMin} min (${reasoningChars} reasoning chars so far)`);
 		throw e;
 	}
 	return {
@@ -191,12 +199,12 @@ export async function askFlint(
 	};
 }
 
-export function checkBrief(cfg: FlintConfig, brief: string): string | undefined {
-	if (!brief.trim()) return "ask_flint: the brief is empty.";
+export function checkBrief(cfg: FriendConfig, brief: string): string | undefined {
+	if (!brief.trim()) return "friends: the brief is empty.";
 	if (brief.length > cfg.maxBriefChars)
 		return (
-			`ask_flint: the brief is ${brief.length} characters, over the ${cfg.maxBriefChars} limit (the Mac prefills slowly). ` +
-			"Send only the code and context the problem needs, then call ask_flint again."
+			`friends: the brief is ${brief.length} characters, over the ${cfg.maxBriefChars} limit (the Mac prefills slowly). ` +
+			"Send only the code and context the problem needs, then call the tool again."
 		);
 	return undefined;
 }

@@ -1,6 +1,6 @@
-// ask-flint: escalate hard, self-contained problems (or plans to review) from the session model to a "friend" —
+// friends: consult other models on hard, self-contained problems (or plans to review) from the session model to a "friend" —
 // another machine's model that sees ONLY the brief, never the conversation or the files. Friends are config:
-// ~/.config/pi-escalation/config.json either holds one friend inline (the original flint shape) or
+// ~/.config/pi-friends/config.json holds {"friends":[...]} or (legacy) one friend inline:
 // {"friends":[{name, baseUrl, model, keyFile, system?, description?, label?, guidelines?, maxTokens?, temperature?,
 // topP?, topK?, timeoutMin?, maxBriefChars?, tunnel?}, ...]}. Each friend registers its own ask_<name> tool with its
 // own queue (each server serves one generation at a time). Design and measurements: README.md.
@@ -9,7 +9,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { askFlint, checkBrief, loadFriends, Queue, readKey, type FlintConfig } from "./client.ts";
+import { askFriend, checkBrief, loadFriends, Queue, readKey, type FriendConfig } from "./client.ts";
 import { ensureTunnel } from "./tunnel.ts";
 
 const DEFAULT_SYSTEM =
@@ -17,7 +17,7 @@ const DEFAULT_SYSTEM =
 	"Reason it through, then answer with the solution itself: the code (complete functions, not fragments) and a short " +
 	"explanation of the key idea and why it is correct. If the brief lacks something you need, say exactly what.";
 
-function makeTool(f: FlintConfig) {
+function makeTool(f: FriendConfig) {
 	const name = f.name ?? "friend";
 	const toolName = `ask_${name}`;
 	const label = f.label ?? name;
@@ -54,7 +54,7 @@ function makeTool(f: FlintConfig) {
 			// re-read config per call so baseUrl/key edits take effect without a restart
 			const cfg = loadFriends().find((x) => x.name === name) ?? f;
 			const bad = checkBrief(cfg, params.brief);
-			if (bad) throw new Error(bad.replace(/^ask_flint:/, `ask_${name}:`));
+			if (bad) throw new Error(bad.replace(/^friends:/, `${toolName}:`));
 			const key = readKey(cfg);
 			const ahead = queue.length;
 			if (ahead > 0) onUpdate?.({ content: [{ type: "text", text: `Waiting for ${ahead} earlier ${toolName} call(s)...` }], details: undefined });
@@ -63,7 +63,7 @@ function makeTool(f: FlintConfig) {
 					const t = await ensureTunnel(cfg.tunnel);
 					if (t !== "up") onUpdate?.({ content: [{ type: "text", text: `SSH tunnel to ${cfg.tunnel.host} ${t}` }], details: undefined });
 				}
-				return askFlint(cfg, key, params.brief, signal, (p) =>
+				return askFriend(cfg, key, params.brief, signal, (p) =>
 					onUpdate?.({
 						content: [{ type: "text", text: `${label} thinking: ${Math.round(p.seconds)} s, ${p.reasoningChars} reasoning chars, ${p.answerChars} answer chars` }],
 						details: undefined,
