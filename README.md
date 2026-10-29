@@ -3,7 +3,10 @@
 Use two local models from one [pi](https://pi.dev/) agent. Qwen on the 2× DGX Spark cluster does the agent loop. Recursive
 Flint on a Mac mini is called for hard, self-contained reasoning problems.
 
-**Status 2026-10-29:** a plan, not built yet. It waits for the Mac mini to be on the network as a Flint server.
+**Status 2026-10-29:**
+- `ask_flint` is written (`extensions/ask-flint/`), and its offline tests pass.
+- First end-to-end run: pi with Qwen calling Flint on the Mac through the tunnel (see "Tested").
+- Not installed into pi globally yet, and not measured on real tasks.
 
 ## Why
 
@@ -36,9 +39,51 @@ Measured with the same problems, seeds and sandbox on both machines (32K budget,
 - **Never switch the session's model to Flint.** pi would re-send the whole history, which at 100K takes 6.5–9 min to prefill
   on the Mac.
 
-## Open before building
+## Install and run
 
-1. Check pi's extension API for registering a tool.
-2. Put the Mac's `rec` server on the LAN with an API key. It binds 127.0.0.1 today.
-3. Measure whether escalation helps: 10–20 real tasks, with and without `ask_flint`, comparing tests passed and wall-clock time.
+```bash
+cp .env.example .env            # MAC, MAC_SSH_KEY, LOCAL_PORT (never commit)
+scripts/tunnel.sh &             # loopback-only tunnel 127.0.0.1:11501 -> Mac 127.0.0.1:11500 (restarts itself)
+scripts/install.sh              # links the extension into ~/.pi/agent/extensions, fetches the key, writes the config
+pi --extension extensions/ask-flint/index.ts   # or: try it for one run without installing
+scripts/install.sh --uninstall
+```
+The Mac side is mac-tuning's `scripts/serve.sh` (`rec serve` on 127.0.0.1:11500, API key on).
+
+Settings live in `~/.config/pi-escalation/config.json`, which overrides the defaults in `client.ts`:
+
+| Setting | Default | Notes |
+|---|---|---|
+| `baseUrl` | `http://127.0.0.1:11501/v1` | |
+| `maxTokens` | 32768 | |
+| `temperature` / `topP` / `topK` | 0.6 / 0.95 / 20 | |
+| `timeoutMin` | 20 | |
+| `maxBriefChars` | 64000 | Longer briefs are refused with an error telling Qwen to shorten them, never silently cut. |
+
+- **The tool adds a description and two guideline lines to Qwen's system prompt.** The first request of every session started
+  or resumed after installing therefore prefills from scratch once (PI.md in spark-tuning: a changed prompt is a cold prefix).
+- **The key is read from `~/.config/pi-escalation/flint_key`** (mode 600) at call time.
+
+## Tested (2026-10-29, one run)
+
+`pi --extension extensions/ask-flint/index.ts --mode json` was run on the live Qwen FP4-Local, with the Flint int4 server on the
+Mac reached through the tunnel. The task: an O(n + k) rewrite of a quadratic `count_pairs`.
+1. Qwen read the file, wrote a self-contained brief with the code pasted in, and called `ask_flint` once.
+2. Flint answered in 43 s: 372 prompt tokens, 4,688 completion tokens, mostly reasoning, which was not returned to Qwen.
+3. The answer was a correct counting-by-remainder solution.
+4. Qwen checked it against the original on random inputs before replying.
+
+This is a smoke test that the plumbing works. It is not evidence of uplift; that is the task comparison under "Open".
+
+## Tests
+
+```bash
+node --experimental-strip-types --test test/*.test.ts   # offline: fake rec-shaped SSE server; streaming, errors, timeout, abort, queue, limits, config
+bash -n scripts/*.sh
+```
+Run pi with `< /dev/null` from scripts. Piped stdin becomes part of the prompt, so pi waits for it to close.
+
+## Open
+
+1. Measure whether escalation helps: 10–20 real tasks, with and without `ask_flint`, comparing tests passed and wall-clock time.
    Nothing here is measured on agent tasks yet; the numbers above are benchmarks.
