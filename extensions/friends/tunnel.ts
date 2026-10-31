@@ -3,9 +3,9 @@
 // restarts it if the host in the config changed since it was started. State (pid + the settings it was started with) lives in
 // ~/.config/pi-friends/tunnel.json. No pi imports (tested by test/tunnel.test.ts).
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { connect } from "node:net";
 
 export interface TunnelConfig {
@@ -16,7 +16,7 @@ export interface TunnelConfig {
 	sshCommand?: string; // default "ssh" (tests use a fake)
 }
 
-export const STATE_PATH = join(homedir(), ".config", "pi-escalation", "tunnel.json");
+export const STATE_PATH = join(homedir(), ".config", "pi-friends", "tunnel.json"); // the one config dir (was pi-escalation until 2026-10-31, when the code still said the old name while this comment said the new one)
 const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
 export function portOpen(port: number, ms = 1000): Promise<boolean> {
@@ -79,6 +79,7 @@ export async function ensureTunnel(t: TunnelConfig, statePath = STATE_PATH, wait
 		if (await portOpen(t.localPort, 300)) {
 			child.stderr!.destroy();
 			child.unref(); // outlives pi; the next call reuses it
+			mkdirSync(dirname(statePath), { recursive: true }); // the dir is created by config.json's existence, but do not depend on that (dirname, not a regex: a bare "tunnel.json" has no / to match)
 			writeFileSync(statePath, JSON.stringify({ pid: child.pid, cfg: t }), { mode: 0o600 });
 			return ours ? "restarted" : "started";
 		}

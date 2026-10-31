@@ -48,7 +48,9 @@ export const REVIEW_SYSTEM =
 	"Prefer few high-confidence findings; an empty findings list is a valid and useful answer, so do not pad. " +
 	"No formatting, naming or linter comments, and no redesign proposals. " +
 	"`needs` is not optional to think about: if you guessed about anything — a caller, a config default, what the " +
-	"server actually sends — say so there. Guessing silently is worse than asking.";
+	"server actually sends — say so there. Guessing silently is worse than asking. " +
+	"Reason as economically as correctness allows and keep enough budget for the JSON object: a review " +
+	"that never arrives because the reasoning ran out of tokens helps nobody.";
 
 export interface ReviewRequest {
 	target: string; // one line: what is being reviewed
@@ -166,8 +168,7 @@ export function parseReview(text: string): Review {
 	return { findings: findings.slice(0, MAX_FINDINGS), needs, raw, format, dropped };
 }
 
-/** What the agent reads back. The footer is the acceptance rule, restated where it will actually be seen. */
-export function renderReview(r: Review, label: string): string {
+/** What the agent reads back. The footer is the acceptance rule, restated where it will actually be seen. */export function renderReview(r: Review, label: string): string {
 	const head = r.format === "json" ? `${r.findings.length} finding(s) from ${label}` : `${label} did not return the JSON contract; treating its prose as notes`;
 	const body = r.findings.length
 		? r.findings
@@ -185,4 +186,68 @@ export function renderReview(r: Review, label: string): string {
 		"\n\nA finding counts only if its test FAILS on the code as it is and PASSES on the fixed code. " +
 		"Run it; anything that cannot do both is a note, not a fix. You decide what to adopt — say what you took and what you rejected.";
 	return `${head}\n\n${body}${needs}${cut}${rule}`;
+}
+
+// ---- where the code under review comes from ----------------------------------------------
+// The diff is fetched by the tool, not typed by the model: a 40 KB diff re-emitted as answer tokens
+// costs minutes and loses bytes to transcription. So the agent names a source and index.ts runs git.
+
+export interface DiffSource {
+	staged?: boolean; // true/undefined: git diff --cached; false: the unstaged working-tree diff
+	base?: string; // git diff <base>...HEAD
+	files?: string[]; // restrict to these paths
+	diff?: string; // explicit text, for a repo without git or a hand-picked hunk
+}
+
+const REF = /^[A-Za-z0-9._\/@-]{1,120}$/; // no leading '-', no spaces, no flags
+const PATH_ = /^[^\0\n\r]{1,300}$/;
+
+/** git argv for the source, or an error naming what was wrong. Never built from unvalidated input:
+ *  a model-supplied `base` of "--output=/x" or "--ext-diff" must not reach git. */
+export function gitArgsFor(d: DiffSource): { args?: string[]; error?: string } {
+	if (d.diff?.trim()) return { error: "using the diff you passed; no git needed" };
+	const files = (d.files ?? []).map((f) => f.trim()).filter(Boolean);
+	for (const f of files) if (!PATH_.test(f) || f.startsWith("-") || f.includes("..")) return { error: `unsafe path ${JSON.stringify(f)}: pass repo-relative paths, no flags, no ".."` };
+	if (d.base !== undefined) {
+		const base = d.base.trim();
+		if (!REF.test(base) || base.startsWith("-")) return { error: `unsafe git ref ${JSON.stringify(base)}: expected a branch, tag or commit` };
+		return { args: ["diff", "--no-ext-diff", `${base}...HEAD`, ...(files.length ? ["--", ...files] : [])] };
+	}
+	if (d.staged === false) return { args: ["diff", "--no-ext-diff", ...(files.length ? ["--", ...files] : [])] }; // unstaged work in progress
+	return { args: ["diff", "--no-ext-diff", "--cached", ...(files.length ? ["--", ...files] : [])] };
+}
+
+/** Split a unified diff into per-file sections. Anything before the first `diff --git` is dropped. */
+export function parseDiffFiles(diff: string): { file: string; text: string }[] {
+	const parts = diff.split(/(?=^diff --git )/m).filter((p) => p.startsWith("diff --git "));
+	return parts.map((text) => {
+		const m = text.match(/^diff --git a\/(\S+) b\/(\S+)/);
+		return { file: m ? m[2] : "(unknown)", text };
+	});
+}
+
+/**
+ * Whole files, packed into groups that fit the brief budget. A single file bigger than the budget is
+ * reported, never cut — same rule as checkBrief. The caller refuses and hands the agent this plan
+ * rather than silently reviewing part of the change or spending 15 minutes on one call.
+ */
+export function planDiffChunks(diff: string, maxChars: number): { groups: string[][]; oversize: { file: string; chars: number }[] } {
+	const groups: string[][] = [];
+	const oversize: { file: string; chars: number }[] = [];
+	let cur: string[] = [];
+	let size = 0;
+	for (const f of parseDiffFiles(diff)) {
+		if (f.text.length > maxChars) {
+			oversize.push({ file: f.file, chars: f.text.length });
+			continue;
+		}
+		if (size + f.text.length > maxChars && cur.length) {
+			groups.push(cur);
+			(cur = []), (size = 0);
+		}
+		cur.push(f.text);
+		size += f.text.length;
+	}
+	if (cur.length) groups.push(cur);
+	return { groups, oversize };
 }

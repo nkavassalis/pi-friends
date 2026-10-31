@@ -1,19 +1,20 @@
 # pi-friends
 
 A [pi](https://pi.dev/) extension for consulting **other models on hard problems** — without ever
-handing them your session. Each *friend* is any OpenAI-compatible chat endpoint; each gets its own
-`ask_<name>` tool. The agent writes a self-contained brief, the friend sees **only the brief** (no
-conversation history, no files), and only the final answer comes back.
+handing them your session. Each *friend* is any OpenAI-compatible chat endpoint; each gets two tools:
+`ask_<name>` for a hard, self-contained problem, and `review_<name>` for a blind code review. The
+agent writes a self-contained brief, the friend sees **only the brief** (no conversation history, no
+files), and only the final answer comes back.
 
 ```json
 { "friends": [
   { "name": "flint", "baseUrl": "http://<reasoning-box>:11502/v1", "model": "flint" },
   { "name": "sage",  "baseUrl": "http://<review-box>:8000/v1",  "model": "sage",
-    "system": "You review plans. Answer with flaws ranked by severity." }
+    "reviewSystem": "You review plans. Answer with flaws ranked by severity." }
 ]}
 ```
-→ tools `ask_flint` and `ask_sage`, each with its own queue, persona, description and key file.
-Adding a friend is a config entry plus a key file — no code.
+→ tools `ask_flint` + `review_flint` and `ask_sage` + `review_sage`, each friend with one queue, its own
+personas, descriptions and key file. Adding a friend is a config entry plus a key file — no code.
 
 ## Why this shape
 
@@ -40,11 +41,12 @@ problems to the friend beat racing both models. **Your numbers will differ; meas
 trust any friend.**
 
 As a **reviewer** it is measured too, and the answer is "useful, not a gate": on a fixture generated
-from this repo's own `client.ts`, it caught 2 of 3 deliberately planted bugs and, on the unmodified
-file, reported 3 defects that were all real with no hallucinations — including one nobody had
-noticed. Recall of 2/3 is why a friend's approval is never a check: it is a second pair of eyes on
-what you told it you were unsure about. Numbers, method, and the limits of a 2-run sample:
-[`test/review-harness/README.md`](test/review-harness/README.md).
+from this repo's own `client.ts` it caught 2 of 3 deliberately planted bugs and, on the unmodified
+file, reported 3 defects that were all real with no hallucinations — including two nobody had
+noticed. Reproduced three times, byte-identical (the server is deterministic for an identical prompt,
+so that is reproducibility, not an error bar). Recall of 2/3 is why a friend's approval is never a
+check: it is a second pair of eyes on what you told it you were unsure about. Numbers, method and the
+limits of the sample: [`test/review-harness/README.md`](test/review-harness/README.md).
 
 ## Install
 
@@ -73,17 +75,46 @@ take the defaults in `client.ts`.
 
 | Setting | Default | Notes |
 |---|---|---|
-| `name` | `friend` | tool becomes `ask_<name>` (sanitized to `[a-z0-9_]`) |
+| `name` | `friend` | tools become `ask_<name>` and `review_<name>` (sanitized to `[a-z0-9_]`) |
 | `baseUrl` | `http://127.0.0.1:11501/v1` | OpenAI-compatible base URL |
 | `model` | `friend` | sent as `model` in the request |
 | `keyFile` | `~/.config/pi-friends/<name>_key` | bearer token; read at call time, never logged |
-| `system` | built-in | one-turn persona; set per friend (e.g. reviewer vs solver) |
+| `system` | built-in | the solver persona for `ask_<name>` |
+| `reviewSystem` | built-in | the reviewer persona for `review_<name>` (see `REVIEW_SYSTEM` in `review.ts`) |
+| `reviewMaxTokens` | 40960 | review budget; reviews reason far longer than they write and a capped run returns **no** review at all |
+| `scanBrief` | `block` | outbound secret gate on every brief: `block`, `warn` (send anyway, with a notice) or `off` |
+| `scanAllow` | `[]` | literal substrings; a line containing one is skipped by the gate — for fixtures and docs examples |
 | `description` / `label` / `guidelines` | built-in | override the tool's prompt text; `{{tool}}` is substituted |
 | `maxTokens` | 32768 | reasoning **and** answer share this; reasoning-only exhaustion is reported as such |
 | `temperature` / `topP` / `topK` | 0.6 / 0.95 / 20 | the measured-best setting for flint; tune per friend |
 | `timeoutMin` | 20 | whole request, queue wait excluded |
 | `maxBriefChars` | 64000 | longer briefs are refused with advice, never truncated |
 | `tunnel` | unset | optional `{host, identity, localPort, remotePort}`: the tool opens/repairs a loopback `ssh -N -L` itself — for friends on machines that aren't always reachable |
+
+## Reviewing code with a friend
+
+```bash
+review_flint  staged: true            # or base: "main", or files: [...], or your own diff: "..."
+              question: "I'm not sure the queue accounting is right if task() rejects before pending-- — attack this"
+              context: "single-generation server; the tool must never let two generations overlap"
+```
+
+- **The `question` is the highest-value field.** "Review my diff" gets style noise; naming what you
+  are unsure about gets an attack on it. It is also the cheapest thing to send.
+- **The diff is fetched by the tool**, not typed by the model: `staged` (default), `base`, `files`, or
+  an explicit `diff`. A 40 KB diff re-emitted as answer tokens costs minutes and loses bytes.
+- **Findings come back structured**, ranked `blocker/major/minor/note`, each with the test that should
+  catch it, plus a `needs` list of what the reviewer wanted to see. A finding with no runnable test is
+  demoted to `note` by the parser, not by the reviewer's own confidence.
+- **Acceptance rule, enforced in the text the agent reads back:** a finding counts only if its test
+  **fails on the code as it is and passes once fixed**. Never auto-apply a finding.
+- **It is a second pair of eyes, not a gate.** Measured 2/3 recall on planted bugs
+  ([`test/review-harness/README.md`](test/review-harness/README.md)) — its silence means nothing.
+- **Two rounds maximum.** Each round is minutes on a single-generation server; use the second only if
+  something in `needs` would change a verdict. It is worth spending sometimes: on 2026-10-31 round 2
+  found a defect the fix from round 1 had missed, in a code path no test covered.
+- Fan-out across *different* friends is free (separate servers, separate queues); two rounds of the
+  same friend are not.
 
 ## Privacy & safety
 
@@ -92,7 +123,15 @@ take the defaults in `client.ts`.
 - Keys live in 600-mode files and are read at call time; nothing prints their contents.
 - Briefs travel as plain HTTP by default — fine on a trusted LAN, put TLS or a tunnel in front of
   anything else. Treat anything in a brief as disclosed to that endpoint's operator.
-- The tool refuses empty and oversized briefs; it never silently cuts.
+- **Every outbound brief passes a secret gate** (`scanBrief`), because a review brief is a diff and a
+  diff is where paths, hostnames and tokens live. Block-tier hits refuse the call and report only the
+  rule name and line number — never the matched text, which would otherwise land in the transcript and
+  the session log. It scans the **whole** brief including diff deletions: a removed line is sent too,
+  so a commit that deletes a credential-shaped literal is refused on purpose (the tool tells you so and
+  points at `files:[...]`). It is a tripwire, not DLP: `warn`/`off` and `scanAllow` exist, and a
+  `scanAllow` entry suppresses a whole line, so keep entries narrow.
+- The tool refuses empty and oversized briefs; it never silently cuts. An oversized diff comes back
+  with a concrete split plan (`files:[...]` groups) rather than a partial review.
 
 ## Tests
 
@@ -101,12 +140,14 @@ node --experimental-strip-types --test test/*.test.ts test/review-harness/*.test
 bash -n scripts/*.sh
 ```
 
-31 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
+46 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
 final empty-choices chunk), request shape and auth headers, timeouts, abort, the queue, the brief
-limit, config loading (legacy + friends shapes, name sanitizing, per-name key defaults), the tunnel
-state machine, and the reviewer half (`extensions/friends/review.ts`: the JSON contract, its prose
-fallback, the `needs` section, severity sorting, and the rule that a finding with no runnable test is
-demoted to a note).
+limit, config loading (legacy + friends shapes, empty `friends: []`, name sanitizing, per-name and
+empty `keyFile` defaults in every branch), the tunnel state machine, the reviewer half (`REVIEW_SYSTEM`,
+the JSON contract and its prose fallback, `needs`, severity sorting, the 12-cap, the no-runnable-test
+demotion, `git` argument validation and diff splitting), and the secret gate (every block rule, warn
+rules, loopback and placeholders not tripping, `scanAllow`, no echoed secrets, diff deletions being
+scanned, and a check that the gate does not refuse this repo's own tracked files).
 
 The review bench is separate because it costs minutes, not milliseconds — it needs a real friend:
 

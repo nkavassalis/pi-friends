@@ -8,7 +8,6 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { askFriend, checkBrief, DEFAULTS, loadConfig, loadFriends, Queue, readKey } from "../extensions/friends/client.ts";
-
 type Handler = (body: any, res: any) => void;
 
 async function serve(handler: Handler): Promise<{ url: string; server: Server; bodies: any[] }> {
@@ -187,6 +186,22 @@ test("friends: friends[] entries get defaults, keyFile per name, sanitized tool 
 	assert.equal(b.baseUrl, "http://b/v1");
 });
 
+test("friends: an explicit empty keyFile counts as unset, not as an empty path", () => {
+	const p = tmpCfg({ friends: [{ name: "a", baseUrl: "http://h:1/v1", keyFile: "  " }] });
+	assert.equal(loadFriends(p)[0].keyFile, "~/.config/pi-friends/a_key"); // was "", failing as "cannot read the API key file :"
+});
+
+test("the same empty-keyFile guard covers the legacy inline shape and loadConfig (the spread lets \"\" win)", () => {
+	// Found by the friend on the second review round, 2026-10-31: the first fix only guarded friends[],
+	// and { ...DEFAULTS, ...file } re-introduces the empty string. Both branches are pinned now.
+	const inline = tmpCfg({ baseUrl: "http://h:1/v1", keyFile: "" });
+	assert.equal(loadFriends(inline)[0].keyFile, "~/.config/pi-friends/friend_key");
+	assert.equal(loadConfig(inline).keyFile, "~/.config/pi-friends/friend_key");
+	const named = tmpCfg({ baseUrl: "http://h:1/v1", name: "sage", keyFile: " " });
+	assert.equal(loadConfig(named).keyFile, "~/.config/pi-friends/sage_key");
+	assert.equal(loadConfig(tmpCfg({ keyFile: "~/k" })).keyFile, "~/k"); // explicit still wins
+});
+
 test("friends: missing config file -> single friend on defaults", () => {
 	const friends = loadFriends("/nonexistent/dir/config.json");
 	assert.equal(friends.length, 1);
@@ -194,11 +209,13 @@ test("friends: missing config file -> single friend on defaults", () => {
 	assert.equal(friends[0].baseUrl, DEFAULTS.baseUrl);
 });
 
-test("known issue: a legacy-shape config read from the pre-rename dir still gets the NEW key path", () => {
+test("legacy inline shape still loads as one friend named 'friend' with the standard key path", () => {
 	const p = tmpCfg({ baseUrl: "http://h:1/v1" }); // inline (pre-rename) shape, no keyFile
-	assert.equal(loadFriends(p)[0].keyFile, "~/.config/pi-friends/friend_key");
-	// resolveCfg() falls back for the CONFIG file only, so a box whose config lives in the pre-rename
-	// dir reads it fine and then cannot find its key. Found by the review bench on 2026-10-31 and left
-	// unfixed on purpose: the sanctioned fix is to delete the legacy fallback (see AGENTS.md), not to
-	// invent a key filename for the old dir. Pinned so the eventual change is a decision, not a drift.
+	const [f] = loadFriends(p);
+	assert.equal(f.name, "friend");
+	assert.equal(f.keyFile, "~/.config/pi-friends/friend_key");
+	// The pre-rename CONFIG-DIR fallback (the project's old name, same place under the user's config
+	// dir) was deleted 2026-10-31: it read the old config but still looked for the key in the new dir,
+	// so it half-worked. The inline SHAPE stays supported — it is cheap and harmless — but there is now
+	// exactly one config location.
 });

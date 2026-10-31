@@ -4,10 +4,13 @@ Measures what a friend actually catches when you ask it to review code. The READ
 design review is "promising but unmeasured" is only allowed to exist while this directory says so too.
 
 ```bash
-node --experimental-strip-types test/review-harness/run-review.ts --friend flint        # ~5 min per trial
+node --experimental-strip-types test/review-harness/run-review.ts --friend flint        # ~4 min per trial
 node --experimental-strip-types test/review-harness/run-review.ts --dry-run             # brief sizes, no call
 node --experimental-strip-types --test test/review-harness/ground.test.ts               # offline, no friend
 ```
+
+One run does both trials (clean, then all plants applied). The friend server is single-generation, so
+do not run two of these, or a `review_<name>` call, at the same time.
 
 ## How it works
 
@@ -35,34 +38,42 @@ Results land in `results/<stamp>-<friend>.{json,md}` and are committed next to a
 them. The writer refuses to emit a URL, a non-loopback IP, a home path, a bearer token, or an
 internal hostname.
 
-## Measured — 2026-10-31, friend `flint`, persona `488d6e456a28`, n=1 per trial
+## Measured — 2026-10-31, friend `flint`, persona `dbb7fa74bbf6`, three repeats
 
 | trial | s | tokens in/out | contract | findings | demoted | plants caught | genuine found | spurious | `needs` |
 |---|---|---|---|---|---|---|---|---|---|
-| clean | 227 | 2954/19897 | json | 3 | 0 | — | 2/6 (+1 newly verified) | 0 | 3 items |
-| planted | 300 | 2937/25147 | json | 3 | 0 | 2/3 | 1/6 | 0 | 2 items |
+| clean | 259–261 | 4613/21459 | json | 3 | 0 | — | 2/8 | 1 (verified real) | 2 items |
+| planted | 246–247 | 4596/20553 | json | 3 | 0 | **2/3** | 1/8 | 0 | 3 items |
 
-All three clean-trial findings were real: the caller-abort-masquerading-as-unreachable-server bug,
-SSE `error` events being skipped, and — not previously known to us — the pre-rename config dir being
-read while `keyFile` still defaults to the new dir, which breaks a half-migrated install. Zero
-hallucinations. In the planted trial it caught the timeout-units and queue-serialization bugs and
-missed the missing `typeof` guard on `delta.content`.
+All three runs, both trials, **byte-identical answers** (`raw` equal, same token counts). The friend
+server is deterministic for an identical prompt, so repeats buy **reproducibility, not statistical
+confidence** — for variance you must vary the brief or the sampling, and `answerSha` in each result
+JSON exists precisely so that sameness is visible instead of assumed.
 
-Same code, same plants, **before** the reviewer persona existed (an ad-hoc brief that overrode the
-solve persona in prose, 2026-10-31): 1/3 plants, 1 hallucinated finding, `needs` empty. The persona
-is the difference between a reviewer that admits what it guessed and one that does not.
+What it caught, every run: the timeout-units and queue-serialization plants (the latter as a blocker,
+with the right test), and on clean code the caller-abort-masquerading-as-unreachable bug, SSE `error`
+events being skipped, and — not known to us beforehand — an explicit empty `keyFile` not falling back
+to the per-name path (now fixed, and in `KNOWN_GENUINE`). What it missed, every run: the missing
+`typeof` guard on `delta.content`. Zero hallucinated findings across the three runs; the one
+"spurious" line was checked by hand and is real.
+
+Same code and plants **before** the reviewer persona existed (an ad-hoc brief that overrode the solve
+persona in prose, persona `488d6e456a28`, one run): 1/3 plants, 1 hallucinated finding, `needs` empty.
+The persona is the difference between a reviewer that admits what it guessed and one that does not.
 
 ## What these numbers do not support
 
-- **n=1 per trial, one friend, no seeds, no repeats.** The 2/3 vs 1/3 comparison is one sample each;
-  it is a direction, not a measurement with an error bar. Re-run before quoting it anywhere.
+- **n=1 in effect.** Three identical completions from a deterministic server are one sample. Say
+  "reproducible", not "3/3 runs".
+- **Three plants is a tiny recall denominator**, and the same three every time. More plants, and
+  paraphrased briefs, are the way to get real spread.
 - **Classification is regex against the reviewer's own phrasing.** A correct finding expressed
-  unusually scores as `spurious`; `answers` in the JSON is the ground truth, and `KNOWN_GENUINE` is
-  a hand-curated list of seven defects that grew out of these runs — it is not exhaustive, so
-  `genuine_missed` means "not in our list", not "the reviewer should have found everything".
-- **Three plants is a tiny recall denominator.** Treat recall as directional until there are more.
-- **Latency is the real cost: 4–5 minutes and 20–25K reasoning tokens per trial.** One review per
-  push, not per edit.
+  unusually scores as `spurious`; `answers` in the JSON is the ground truth, and `KNOWN_GENUINE` is a
+  hand-curated list that grew out of these runs — `genuine_missed` means "not in our list", not
+  "everything a reviewer should have found".
+- **Latency is the real cost: ~4 minutes and 20K reasoning tokens per trial**, and reasoning-only
+  exhaustion is a total loss (a 6-file review once used all 32768 tokens and returned nothing), which
+  is why `reviewMaxTokens` exists and the bench uses the same budget the tool ships with.
 - Playwright, live servers and anything needing the network are out of scope here by design; the
   offline tier is the fake SSE server only.
 

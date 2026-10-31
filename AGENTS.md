@@ -17,11 +17,12 @@ Rules:
 | Path | What |
 |---|---|
 | `package.json` | npm/pi package manifest; the `pi-package` keyword is what makes it discoverable in the pi gallery |
-| `extensions/friends/index.ts` | the pi extension: registers one `ask_<name>` tool per configured friend, plus `/friends` |
+| `extensions/friends/index.ts` | the pi extension: per configured friend an `ask_<name>` and a `review_<name>` tool, plus `/friends` |
 | `extensions/friends/client.ts` | config (legacy + `friends[]` shapes), per-friend one-at-a-time queue, the streamed request, brief check (no pi imports) |
 | `extensions/friends/review.ts` | the reviewer half: `REVIEW_SYSTEM` persona, `buildReviewBrief`, the lenient `parseReview`, `renderReview` (no pi imports) |
 | `extensions/friends/tunnel.ts` | optional on-demand SSH tunnel (used only with a `tunnel` config block) |
 | `test/client.test.ts`, `test/tunnel.test.ts`, `test/fake_ssh.mjs` | offline tests: fake OpenAI-compatible SSE server, fake ssh |
+| `test/scan.test.ts` | the outbound secret gate: every rule, the allow list, no echoed secrets, and that the gate does not refuse this repo's own files |
 | `test/review.test.ts` | offline tests for the reviewer half (contract parsing, prose fallback, demotion, sorting, cap) |
 | `test/review-harness/plants.ts` | the review fixture, generated from the real `client.ts` by textual patch — drift fails loudly |
 | `test/review-harness/ground.test.ts` | differential ground truth: clean behaves, each plant misbehaves. Read this before trusting any bench number |
@@ -43,16 +44,32 @@ The bench is not in that list because it needs a live friend and costs ~5 min pe
 (`ground.test.ts`) is in the list and is what makes the bench's numbers mean anything.
 
 ## Notes for agents
-- `client.ts` must stay importable without pi (that is what makes the tests offline); all pi
-  imports live in `index.ts`.
-- A friend's server is assumed single-generation, so `Queue` is per friend, not global — two
-  different servers should not serialize against each other.
+- `client.ts` and `review.ts` must stay importable without pi (that is what makes the tests offline);
+  all pi imports live in `index.ts`. Tests must therefore never import `index.ts`.
+- A friend's server is assumed single-generation. `Queue` is per friend, not global — two different
+  servers should not serialize against each other — and `ask_<name>` and `review_<name>` **share** it.
+  The protection is per process: two pi sessions against one friend still overlap.
+- Friend tools deliberately do **not** set `executionMode: "sequential"`: that flag makes pi take the
+  sequential path for the whole tool batch (`pi-agent-core` `agent-loop.js`), which would stop two
+  different friends from running in one turn. The `Queue` is what protects a single-generation server.
 - `loadFriends()` re-reads the file on every call (config edits need no restart) but tools register
   once at startup, so adding a friend needs a pi restart; changing its `baseUrl` does not.
-- The pre-rename config dir `~/.config/pi-escalation/` is still read as a fallback
-  (`resolveCfg`); remove that fallback once no install uses it (dated 2026-10-29).
+  `{"friends": []}` means no friends — it no longer silently yields a phantom friend on the default
+  endpoint, and `/friends` says so (and points at the pre-rename dir if a config is sitting there).
+- The pre-rename config-dir fallback (the project's old name, same location under the user's config
+  directory) was **deleted 2026-10-31**: it read the old config but still looked for the key in the new
+  dir, so it half-worked and confused more than it helped. The inline single-friend *shape* is still
+  supported. There is one config location now — `tunnel.ts` state moved to the same dir on the same
+  date (its comment already said so; the code did not). `/friends` points there if a config is left.
+- A review brief is a diff, so it goes through `gateBrief` before anything is sent. Keep gate logic in
+  `client.ts` (offline-testable), never in `index.ts`.
+- Fake credentials in tests must be **assembled at run time** (`"AKIA" + "ABC…"`, `.join("/")`). A whole
+  credential on one source line makes `test/scan.test.ts`'s last test refuse a diff of pi-friends
+  itself — which is exactly what ate an 8-minute review call on 2026-10-31 while that file was still
+  untracked.
 
 ## Design decisions, reviewer half (2026-10-31)
+
 - **Review is a separate persona, not a hint in the tool description.** With the solve persona
   overridden only in brief prose, the bench got 1/3 plants, one hallucinated finding and an empty
   `needs`. With `REVIEW_SYSTEM` it got 2/3 plants, no hallucinations, and it named what it had
@@ -71,30 +88,51 @@ The bench is not in that list because it needs a live friend and costs ~5 min pe
 - **`executionMode: "sequential"` on friend tools serializes the whole tool batch**, not just that
   tool: pi's loop takes the sequential path if *any* tool in the turn is marked sequential
   (`pi-agent-core/dist/agent-loop.js`). So per-friend fan-out is NOT free while that flag is set.
-  The per-friend `Queue` is what actually protects a single-generation server. Not yet changed —
-  see TODOs.
+  The per-friend `Queue` is what actually protects a single-generation server. Dropped from both
+  friend tools 2026-10-31; still not confirmed by a timed run — see Not verified.
+- **The tool fetches the diff, the model does not type it** (`staged`/`base`/`files`/`diff`). A 40 KB
+  diff re-emitted as answer tokens costs minutes and loses bytes. Because `base` and `files` come from
+  the model, `gitArgsFor` validates them (no leading `-`, no `..`, no flags, `--no-ext-diff`, pathspecs
+  after `--`) and the tests assert flag injection is refused.
+- **Reviews get their own token budget** (`reviewMaxTokens`, default 40960, `> 0` enforced in both the
+  tool and the bench). Measured: a 5-file review used 25K tokens; a 6-file one consumed all 32768
+  reasoning tokens and returned **nothing** after 493 s. Reasoning-only exhaustion is a total loss, not
+  a degraded answer, so the budget must be generous and the persona says so.
+- **Two rounds pay for themselves — measured the same day.** Round 1 caught the queue and timeout
+  plants; after we fixed the empty-`keyFile` symptom in the `friends[]` branch, round 2 found the legacy
+  inline branch still had it, because `{ ...DEFAULTS, ...file }` lets an explicit `""` overwrite the
+  default. No test we had would have found that. The acceptance rule worked: the session ran the
+  reviewer's test (fails before, passes after) before adopting it.
 
 ## Known issues / TODOs
-- `review.ts` is used by the bench but **no `review_<name>` tool is wired yet**; today a review means
-  the agent pasting code into `ask_<name>` itself. Next: the tool (which should run `git diff`
-  itself in `index.ts`, so a 40 KB diff never passes through the model's output tokens), the
-  secret-scan gate on outbound briefs, and dropping `executionMode: "sequential"` after measuring
-  overlap from `tool_execution_start/end` timestamps in a session log.
-- Legacy key path: `resolveCfg` falls back to the pre-rename config dir but `keyFile` still defaults
-  to the new one, so a half-migrated box cannot find its key (pinned by a test in `client.test.ts`).
-  Fix by deleting the fallback, not by guessing a filename in the old dir.
+- **The gate is a tripwire, not DLP, and it scans the WHOLE brief including diff deletions** — a removed
+  line is sent to the friend too, so a commit that deletes a credential-shaped literal is refused on
+  purpose. That reads like a false positive (it refused our own diff twice on 2026-10-31), so
+  `review_<name>` says so explicitly and points at `files:[...]` / `scanAllow`. Pinned by a test in
+  `test/scan.test.ts`; do not "fix" it by scanning only `+` lines.
+  Other gaps: `scanBrief: "warn"/"off"` and `scanAllow` are operator config (the model cannot pass its
+  own allow list, but one knob disables the gate); an `scanAllow` entry suppresses a whole line, so a
+  real secret on an allowed line is missed; `highEntropy` needs ≥16 chars, so a 15-char `token: "…"` is
+  a notice that still sends; nothing looks inside base64 or prose. Fix a false positive by narrowing
+  the rule, never by weakening it.
+- `queue.length` for the "waiting for N calls" message is read outside the queue — cosmetic race.
 - Real defects the bench found and nobody has fixed yet, all small: a caller abort is rewrapped as
   "cannot reach the server"; SSE `data:` events carrying an error are skipped; `Queue.run` leaks
   `pending` if `task()` throws synchronously; no final buffer/`TextDecoder` flush; one malformed
   `data:` line aborts the whole call; friend names can sanitize to the same or an empty tool name.
 
 ## Not verified (2026-10-31)
-- Every bench number is **n=1 per trial, one friend, no seeds, no repeats**. Directional only.
-- `KNOWN_GENUINE` in `run-review.ts` is a hand-curated list of seven defects that grew out of these
-  runs; `genuine_missed` means "not in our list", not "everything a reviewer should have found".
+- Every bench number is one friend, no seeds, no repeats per run. Repeats are what
+  `test/review-harness/results/` is for — quote the file, not a single run.
+- The `executionMode` claim above is from reading shipped JS, not from a timed two-friend run. To
+  settle it: configure two friends, call both in one turn, compare `tool_execution_start/end`
+  timestamps in the session JSONL.
+- `KNOWN_GENUINE` in `run-review.ts` is a hand-curated list of defects that grew out of these runs;
+  `genuine_missed` means "not in our list", not "everything a reviewer should have found".
 - Finding classification is regex against the reviewer's own phrasing, so a correct finding worded
   unusually scores as `spurious`. The `answers` array in each result JSON is the real record.
-- The `executionMode` claim above is from reading shipped JS, not from a timed run.
+- The gate has never been exercised against a real leaked credential in the wild; only against the
+  shapes in `test/scan.test.ts`.
 
 ## Do not touch
 - `client.ts` and `review.ts` must not import pi — that is what keeps the suite offline.

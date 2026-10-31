@@ -103,3 +103,57 @@ test("renderReview states the acceptance rule where the agent will read it", () 
 	assert.match(out, /Wanted to see/);
 	assert.match(out, /FAILS on the code as it is and PASSES on the fixed code/);
 });
+
+// --- where the code under review comes from -------------------------------------------------
+import { gitArgsFor, parseDiffFiles, planDiffChunks } from "../extensions/friends/review.ts";
+
+const file = (n: string, body = "x".repeat(40)) => `diff --git a/${n} b/${n}\nindex 111..222 100644\n--- a/${n}\n+++ b/${n}\n@@ -1 +1 @@\n+${body}\n`;
+
+test("gitArgsFor: staged by default, base when given, paths appended, explicit diff means no git", () => {
+	assert.deepEqual(gitArgsFor({}).args, ["diff", "--no-ext-diff", "--cached"]);
+	assert.deepEqual(gitArgsFor({ staged: true }).args, ["diff", "--no-ext-diff", "--cached"]);
+	assert.deepEqual(gitArgsFor({ base: "main" }).args, ["diff", "--no-ext-diff", "main...HEAD"]);
+	assert.deepEqual(gitArgsFor({ base: "v1.0.0", files: ["a.ts", "b.ts"] }).args, ["diff", "--no-ext-diff", "v1.0.0...HEAD", "--", "a.ts", "b.ts"]);
+	// staged:false means the unstaged working tree — found by a real pi run on 2026-10-31, where the
+	// flag was plumbed in and then ignored, so there was no way to review uncommitted work.
+	assert.deepEqual(gitArgsFor({ staged: false }).args, ["diff", "--no-ext-diff"]);
+	assert.deepEqual(gitArgsFor({ staged: false, files: ["a.ts"] }).args, ["diff", "--no-ext-diff", "--", "a.ts"]);
+	assert.deepEqual(gitArgsFor({ staged: true }).args, ["diff", "--no-ext-diff", "--cached"]);
+	assert.match(gitArgsFor({ diff: "hello" }).error!, /no git needed/);
+	assert.equal(gitArgsFor({ diff: "hello" }).args, undefined);
+});
+
+test("gitArgsFor refuses flag injection through base or files (the model supplies these)", () => {
+	for (const base of ["--output=/tmp/x", "--ext-diff", "main; rm -rf /", "-b", "", "main --help"]) {
+		const { args, error } = gitArgsFor({ base });
+		assert.equal(args, undefined, `base ${JSON.stringify(base)} must not reach git`);
+		assert.match(error!, /unsafe git ref/);
+	}
+	for (const f of ["--cached", "../secret", "a\\b\u0000"]) {
+		const { args, error } = gitArgsFor({ files: [f] });
+		assert.equal(args, undefined, `path ${JSON.stringify(f)} must not reach git`);
+		assert.match(error!, /unsafe path/);
+	}
+});
+
+test("parseDiffFiles names each file section and drops the preamble", () => {
+	const d = "some preamble\n" + file("a.ts") + file("b.ts");
+	const parts = parseDiffFiles(d);
+	assert.deepEqual(parts.map((p) => p.file), ["a.ts", "b.ts"]);
+	assert.match(parts[0].text, /^diff --git a\/a\.ts/);
+	assert.deepEqual(parseDiffFiles(""), []);
+});
+
+test("planDiffChunks packs whole files under budget and reports an oversize file instead of cutting it", () => {
+	const small = file("a.ts") + file("b.ts");
+	assert.equal(planDiffChunks(small, 100000).groups.length, 1);
+	const big = file("a.ts", "x".repeat(500)) + file("b.ts", "y".repeat(500)) + file("c.ts", "z".repeat(500));
+	const plan = planDiffChunks(big, 700);
+	assert.ok(plan.groups.length >= 2, "must split rather than truncate");
+	assert.ok(plan.groups.every((g) => g.join("").length <= 700));
+	assert.deepEqual(plan.groups.flat().length, 3, "no file may be dropped");
+	const one = planDiffChunks(file("huge.ts", "h".repeat(5000)), 700);
+	assert.deepEqual(one.groups, []);
+	assert.equal(one.oversize[0].file, "huge.ts");
+	assert.ok(one.oversize[0].chars > 700);
+});
