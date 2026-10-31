@@ -37,8 +37,14 @@ A measured example of the trade-off (same problems, seeds and sandbox on both ma
 solves ~51% of hard LiveCodeBench problems; a reasoning model on a Mac mini (Recursive Flint int4)
 solves ~71% of the same set — and solves almost everything the agent model solves. Routing the hard
 problems to the friend beat racing both models. **Your numbers will differ; measure before you
-trust any friend.** Flint's edge is measured on competitive programming; its use as a *design
-reviewer* (which the tool also supports) is promising but unmeasured.
+trust any friend.**
+
+As a **reviewer** it is measured too, and the answer is "useful, not a gate": on a fixture generated
+from this repo's own `client.ts`, it caught 2 of 3 deliberately planted bugs and, on the unmodified
+file, reported 3 defects that were all real with no hallucinations — including one nobody had
+noticed. Recall of 2/3 is why a friend's approval is never a check: it is a second pair of eyes on
+what you told it you were unsure about. Numbers, method, and the limits of a 2-run sample:
+[`test/review-harness/README.md`](test/review-harness/README.md).
 
 ## Install
 
@@ -91,14 +97,27 @@ take the defaults in `client.ts`.
 ## Tests
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # offline: fake OpenAI-compatible SSE server + fake ssh
+node --experimental-strip-types --test test/*.test.ts test/review-harness/*.test.ts   # offline: fake OpenAI-compatible SSE server + fake ssh
 bash -n scripts/*.sh
 ```
 
-16 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
+31 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
 final empty-choices chunk), request shape and auth headers, timeouts, abort, the queue, the brief
-limit, config loading (legacy + friends shapes, name sanitizing, per-name key defaults) and the
-tunnel state machine.
+limit, config loading (legacy + friends shapes, name sanitizing, per-name key defaults), the tunnel
+state machine, and the reviewer half (`extensions/friends/review.ts`: the JSON contract, its prose
+fallback, the `needs` section, severity sorting, and the rule that a finding with no runnable test is
+demoted to a note).
+
+The review bench is separate because it costs minutes, not milliseconds — it needs a real friend:
+
+```bash
+node --experimental-strip-types test/review-harness/run-review.ts --friend flint   # ~5 min per trial
+node --experimental-strip-types test/review-harness/run-review.ts --dry-run        # brief sizes, no call
+```
+
+Its offline tier (`ground.test.ts`) is mandatory reading before trusting any number it prints: it
+proves each planted bug actually changes behaviour. See
+[`test/review-harness/README.md`](test/review-harness/README.md).
 
 ## License
 

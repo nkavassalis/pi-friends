@@ -16,6 +16,7 @@
   },
   "files": ["extensions/friends", "README.md", "LICENSE", "AGENTS.md"],
   "scripts": {
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts test/review-harness/*.test.ts",
+    "review:bench": "node --experimental-strip-types test/review-harness/run-review.ts"
   }
 }

@@ -193,3 +193,12 @@ test("friends: missing config file -> single friend on defaults", () => {
 	assert.equal(friends[0].name, "friend");
 	assert.equal(friends[0].baseUrl, DEFAULTS.baseUrl);
 });
+
+test("known issue: a legacy-shape config read from the pre-rename dir still gets the NEW key path", () => {
+	const p = tmpCfg({ baseUrl: "http://h:1/v1" }); // inline (pre-rename) shape, no keyFile
+	assert.equal(loadFriends(p)[0].keyFile, "~/.config/pi-friends/friend_key");
+	// resolveCfg() falls back for the CONFIG file only, so a box whose config lives in the pre-rename
+	// dir reads it fine and then cannot find its key. Found by the review bench on 2026-10-31 and left
+	// unfixed on purpose: the sanctioned fix is to delete the legacy fallback (see AGENTS.md), not to
+	// invent a key filename for the old dir. Pinned so the eventual change is a decision, not a drift.
+});
