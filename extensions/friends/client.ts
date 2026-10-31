@@ -60,7 +60,9 @@ export function loadConfig(p = CONFIG_PATH): FriendConfig {
 		if (e?.code !== "ENOENT") throw new Error(`friends: cannot read ${p}: ${e.message}`);
 	}
 	const cfg = { ...DEFAULTS, ...file };
-	cfg.keyFile = keyOrDefault(cfg.keyFile, cfg.name ?? DEFAULTS.name!);
+	// keyOrDefault must see the RAW value: after the spread, cfg.keyFile is always truthy (DEFAULTS
+	// supplies one), so the per-name fallback could never fire and a named inline friend used friend_key.
+	cfg.keyFile = keyOrDefault(file.keyFile, cfg.name ?? DEFAULTS.name!);
 	return cfg;
 }
 
@@ -80,13 +82,21 @@ export function loadFriends(p = CONFIG_PATH): FriendConfig[] {
 	}
 	if (Array.isArray(file?.friends)) {
 		// An explicit empty list means "no friends", not "give me a bogus default one on 127.0.0.1".
-		return file.friends.map((f: any) => {
-			const clean = String(f?.name ?? "friend").toLowerCase().replace(/[^a-z0-9_]/g, "_");
+		const list = file.friends.map((f: any) => {
+			// collapse runs and trim edges, or "!!!" becomes the perfectly valid-looking tool name ask___
+			const clean = String(f?.name ?? "friend").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+			if (!clean) throw new Error(`friends: a friend name sanitizes to an empty tool name (ask_); use letters, digits and _ (got ${JSON.stringify(f?.name)})`);
 			return { ...DEFAULTS, ...f, name: clean, keyFile: keyOrDefault(f.keyFile, clean) } as FriendConfig;
 		});
+		// Two names that collapse to one tool ("My Model" / "my-model") would silently shadow each other.
+		const counts = new Map<string, number>();
+		for (const f of list) counts.set(f.name, (counts.get(f.name) ?? 0) + 1);
+		const dupes = [...counts].filter(([, n]) => n > 1).map(([n, c]) => `${n} x${c}`);
+		if (dupes.length) throw new Error(`friends: these names collide as ask_<name>/review_<name>: ${dupes.join(", ")} — give every friend a distinct name`);
+		return list;
 	}
 	const one = { ...DEFAULTS, ...file } as FriendConfig; // legacy inline shape
-	one.keyFile = keyOrDefault(one.keyFile, one.name ?? DEFAULTS.name!); // same guard: the spread would let "" win
+	one.keyFile = keyOrDefault(file.keyFile, one.name ?? DEFAULTS.name!); // raw value, same reason as loadConfig
 	return [one];
 }
 
@@ -108,7 +118,16 @@ export class Queue {
 	}
 	run<T>(task: () => Promise<T>): Promise<T> {
 		this.pending++;
-		const go = () => task().finally(() => this.pending--);
+		// Promise.resolve + try/catch around task(): if task() THROWS SYNCHRONOUSLY the .finally is never
+		// attached, pending leaks, and this friend is wedged for the rest of the session (review bench, 2026-10-31).
+		const go = () => {
+			try {
+				return Promise.resolve(task()).finally(() => this.pending--);
+			} catch (e) {
+				this.pending--;
+				return Promise.reject(e);
+			}
+		};
 		const next = this.tail.then(go, go);
 		this.tail = next.catch(() => undefined);
 		return next;
@@ -123,6 +142,7 @@ export interface FriendResult {
 	completionTokens: number;
 	cachedTokens: number;
 	seconds: number;
+	badChunks: number; // SSE lines that were not valid JSON — tolerated, but never silently
 }
 
 export type Progress = (p: { seconds: number; reasoningChars: number; answerChars: number }) => void;
@@ -159,41 +179,58 @@ export async function askFriend(
 			signal: sig,
 		});
 	} catch (e: any) {
-		throw new Error(timeout.aborted ? `friends: timed out after ${cfg.timeoutMin} min` : `friends: cannot reach ${cfg.name ?? "friend"} at ${cfg.baseUrl} (is the server up, and is baseUrl right?): ${e.message}`);
+		// Order matters. A caller abort (the user pressed escape) is not a connectivity problem, and
+		// "is the server up?" sends someone debugging a perfectly good server in the wrong direction.
+		if (signal?.aborted) throw new Error(`friends: cancelled by the caller before ${cfg.name ?? "friend"} answered`);
+		if (timeout.aborted) throw new Error(`friends: timed out after ${cfg.timeoutMin} min`);
+		throw new Error(`friends: cannot reach ${cfg.name ?? "friend"} at ${cfg.baseUrl} (is the server up, and is baseUrl right?): ${e.message}`);
 	}
 	if (!res.ok || !res.body) {
 		const text = await res.text().catch(() => "");
 		throw new Error(`friends: ${cfg.name ?? "friend"} answered HTTP ${res.status}: ${text.slice(0, 300)}`);
 	}
-	let answer = "", reasoningChars = 0, finish = "", buf = "", lastTick = 0;
+	let answer = "", reasoningChars = 0, finish = "", buf = "", lastTick = 0, badChunks = 0;
 	let usage: any = {};
 	const dec = new TextDecoder();
+	const consume = (raw: string) => {
+		const line = raw.trim();
+		if (!line.startsWith("data:")) return;
+		const data = line.slice(5).trim();
+		if (data === "[DONE]" || !data) return;
+		let ev: any;
+		try {
+			ev = JSON.parse(data); // one malformed heartbeat line must not kill a 4-minute generation; counted, not silent
+		} catch {
+			badChunks++;
+			return;
+		}
+		if (ev.error) throw new Error(`friends: ${cfg.name ?? "friend"} sent a stream error: ${String(ev.error?.message ?? ev.error).slice(0, 300)}`);
+		if (ev.usage) usage = ev.usage;
+		for (const ch of ev.choices ?? []) {
+			const d = ch.delta ?? {};
+			if (typeof d.content === "string") answer += d.content;
+			const r = d.reasoning ?? d.reasoning_content;
+			if (typeof r === "string") reasoningChars += r.length;
+			if (ch.finish_reason) finish = ch.finish_reason;
+		}
+	};
 	try {
 		for await (const chunk of res.body as any) {
 			buf += dec.decode(chunk, { stream: true });
 			let nl: number;
 			while ((nl = buf.indexOf("\n")) >= 0) {
-				const line = buf.slice(0, nl).trim();
+				consume(buf.slice(0, nl));
 				buf = buf.slice(nl + 1);
-				if (!line.startsWith("data:")) continue;
-				const data = line.slice(5).trim();
-				if (data === "[DONE]") continue;
-				const ev = JSON.parse(data);
-				if (ev.usage) usage = ev.usage;
-				for (const ch of ev.choices ?? []) {
-					const d = ch.delta ?? {};
-					if (typeof d.content === "string") answer += d.content;
-					const r = d.reasoning ?? d.reasoning_content;
-					if (typeof r === "string") reasoningChars += r.length;
-					if (ch.finish_reason) finish = ch.finish_reason;
-				}
 			}
 			if (onProgress && Date.now() - lastTick > 2000) {
 				lastTick = Date.now();
 				onProgress({ seconds: (lastTick - t0) / 1000, reasoningChars, answerChars: answer.length });
 			}
 		}
+		buf += dec.decode(); // flush a multibyte character split across chunks
+		if (buf.trim()) consume(buf); // a final event with no trailing newline used to be dropped silently
 	} catch (e: any) {
+		if (signal?.aborted) throw new Error(`friends: cancelled by the caller after ${reasoningChars} reasoning chars`);
 		if (timeout.aborted) throw new Error(`friends: timed out after ${cfg.timeoutMin} min (${reasoningChars} reasoning chars so far)`);
 		throw e;
 	}
@@ -205,6 +242,7 @@ export async function askFriend(
 		completionTokens: usage.completion_tokens ?? 0,
 		cachedTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
 		seconds: (Date.now() - t0) / 1000,
+		badChunks,
 	};
 }
 

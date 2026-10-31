@@ -41,12 +41,14 @@ problems to the friend beat racing both models. **Your numbers will differ; meas
 trust any friend.**
 
 As a **reviewer** it is measured too, and the answer is "useful, not a gate": on a fixture generated
-from this repo's own `client.ts` it caught 2 of 3 deliberately planted bugs and, on the unmodified
-file, reported 3 defects that were all real with no hallucinations — including two nobody had
-noticed. Reproduced three times, byte-identical (the server is deterministic for an identical prompt,
-so that is reproducibility, not an error bar). Recall of 2/3 is why a friend's approval is never a
-check: it is a second pair of eyes on what you told it you were unsure about. Numbers, method and the
-limits of the sample: [`test/review-harness/README.md`](test/review-harness/README.md).
+from this repo's own `client.ts` it caught **1 to 2 of 3** deliberately planted bugs depending on the
+run (the denominator is small and the variance unknown — see the two result tables), and across every
+run it never got away with a fabricated finding, because a finding must name a test that fails before
+and passes after. Its real value showed twice on 2026-10-31: it found defects nobody had noticed, and
+then found a **regression one of our own fixes had just introduced** (a named inline friend silently
+using the default key file) — a bug no test in the suite covered. That is what a second pair of eyes
+buys. It is not a check: 1/3 recall means its silence means nothing. Numbers, method and the limits of
+the sample: [`test/review-harness/README.md`](test/review-harness/README.md).
 
 ## Install
 
@@ -140,14 +142,15 @@ node --experimental-strip-types --test test/*.test.ts test/review-harness/*.test
 bash -n scripts/*.sh
 ```
 
-46 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
-final empty-choices chunk), request shape and auth headers, timeouts, abort, the queue, the brief
-limit, config loading (legacy + friends shapes, empty `friends: []`, name sanitizing, per-name and
-empty `keyFile` defaults in every branch), the tunnel state machine, the reviewer half (`REVIEW_SYSTEM`,
-the JSON contract and its prose fallback, `needs`, severity sorting, the 12-cap, the no-runnable-test
-demotion, `git` argument validation and diff splitting), and the secret gate (every block rule, warn
-rules, loopback and placeholders not tripping, `scanAllow`, no echoed secrets, diff deletions being
-scanned, and a check that the gate does not refuse this repo's own tracked files).
+54 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
+final empty-choices chunk), request shape and auth headers, timeouts, abort, the queue (including a
+task that throws synchronously), the brief limit, config loading (legacy + friends shapes, empty
+`friends: []`, name sanitizing, colliding names, per-name and empty `keyFile` defaults in every
+branch), the tunnel state machine, the reviewer half (`REVIEW_SYSTEM`, the JSON contract and its prose
+fallback, `needs`, severity sorting, the 12-cap, the no-runnable-test demotion, `git` argument
+validation and diff splitting), and the secret gate (every block rule, warn rules, loopback and
+placeholders not tripping, `scanAllow`, no echoed secrets, diff deletions being scanned, and a check
+that the gate does not refuse this repo's own tracked files).
 
 The review bench is separate because it costs minutes, not milliseconds — it needs a real friend:
 

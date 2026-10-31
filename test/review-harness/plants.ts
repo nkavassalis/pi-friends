@@ -23,11 +23,11 @@ const TUNNEL = new URL("../../extensions/friends/tunnel.ts", import.meta.url);
 export const PLANTS: Plant[] = [
 	{
 		id: "queue-no-serialization",
-		claim: "Queue.run starts the task immediately instead of chaining on this.tail, and pending++/-- both happen synchronously",
-		why: "two generations hit the single-generation server at once and queue.length always reads 0, so the 'waiting for N calls' progress lies",
-		find: "\trun<T>(task: () => Promise<T>): Promise<T> {\n\t\tthis.pending++;\n\t\tconst go = () => task().finally(() => this.pending--);\n\t\tconst next = this.tail.then(go, go);\n\t\tthis.tail = next.catch(() => undefined);\n\t\treturn next;\n\t}",
-		replace: "\trun<T>(task: () => Promise<T>): Promise<T> {\n\t\tthis.pending++;\n\t\tconst next = Promise.resolve().then(task);\n\t\tthis.tail = next.catch(() => undefined);\n\t\tthis.pending--;\n\t\treturn next;\n\t}",
-		match: [/queue|run\(|pending|tail/i, /serial|concurren|overlap|one at a time|immediately|without waiting/i],
+		claim: "Queue.run chains on Promise.resolve() instead of this.tail, so tasks start immediately",
+		why: "two generations hit the single-generation server at once — the one thing the queue exists to prevent",
+		find: "\t\tconst next = this.tail.then(go, go);",
+		replace: "\t\tconst next = Promise.resolve().then(go); // BUG: nothing waits for the previous task",
+		match: [/queue|run\(|pending|tail|serial/i, /concurren|overlap|one at a time|immediately|without waiting|not wait/i],
 	},
 	{
 		id: "content-no-typeguard",

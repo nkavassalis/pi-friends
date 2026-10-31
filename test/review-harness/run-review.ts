@@ -50,17 +50,17 @@ const QUESTION =
 	"Where would this break for a real user of the tool? Look hardest at the queue, the SSE parsing " +
 	"loop, the timeout/abort handling, and the config and key-file paths.";
 
-/** Latent defects a reviewer SHOULD name (measured or reasoned, see README). A finding matching one of
- *  these is a real catch even in the clean trial; one matching nothing is a candidate hallucination. */
+/** What a good reviewer SHOULD raise on this file today (each verified by reading the code). The six
+ *  latent defects that were here — abort mislabel, skipped SSE errors, pending leak, missing flush,
+ *  fatal JSON.parse, name collisions — were FIXED on 2026-10-31; keeping them would turn every clean
+ *  run into a wall of misses. Re-curate this list whenever you fix something it names. */
 const KNOWN_GENUINE: { id: string; label: string; match: RegExp[] }[] = [
-	{ id: "abort-mislabel", label: "caller abort rewrapped as 'cannot reach the server'", match: [/abort/i, /reach|server up|is the server|mislead|cancel/i] },
-	{ id: "sse-error-ignored", label: "SSE data: events carrying an error are skipped", match: [/error/i, /event|data|ignore|skip|swallow|hang/i] },
-	{ id: "queue-pending-leak", label: "pending leaks if task() throws synchronously, wedging the queue", match: [/pending/i, /leak|wedg|stuck|never|decrement|finally|throw/i] },
-	{ id: "stream-no-flush", label: "no final buffer/TextDecoder flush; a trailing line without \\n is dropped", match: [/flush|trailing|newline|decoder|last line|partial|buffer/i] },
-	{ id: "json-parse-kills-stream", label: "one malformed data: line aborts the whole call", match: [/json\.parse|malformed|invalid json|bad json/i] },
-	{ id: "name-collision", label: "friend names can sanitize to the same or an empty tool name", match: [/sanitiz|collision|duplicate|same name|empty name|ask_$/i] },
-	{ id: "legacy-key-fallback", label: "the pre-rename config dir is read, but keyFile still defaults to the new dir", match: [/key/i, /legacy|pi-escalation|pre-rename|fallback/i] },
-	{ id: "empty-keyfile-default", label: "an explicit empty keyFile is not defaulted to the per-name path", match: [/keyfile/i, /empty|blank|unset|default/i] },
+	{ id: "queue-is-per-process", label: "the queue only serializes within one pi session; two sessions still overlap", match: [/queue|serial|one at a time/i, /process|session|two |another |concurrent/i] },
+	{ id: "abort-orphansthe-generation", label: "aborting the fetch does not stop the server's generation, so the single slot stays busy", match: [/abort|cancel/i, /server|generation|slot|keep|still|busy|orphan|waste/i] },
+	{ id: "no-retry-on-transient-failure", label: "a dropped connection loses the whole 4-minute generation; there is no retry or resume", match: [/retry|retries|backoff|transient|reconnect|resume|dropped|partial/i] },
+	{ id: "unauthenticated-plain-http", label: "the endpoint is trusted blindly: plain HTTP, no TLS, no proof you are talking to your own server", match: [/http|tls|https|authenticat|trust|verif|mitm/i, /endpoint|server|url|lan|network|anyone/i] },
+	{ id: "budget-measured-in-chars", label: "the brief budget is counted in characters while prefill cost is in tokens", match: [/char/i, /token|prefill|budget|limit/i] },
+	{ id: "progress-counter-race", label: "queue.length is read outside the queue for the waiting message", match: [/queue\.length|progress|waiting/i, /race|stale|outside|before|misleading|wrong/i] },
 ];
 
 const textOf = (f: { where: string; claim: string; why: string; test: string }) => `${f.where} ${f.claim} ${f.why} ${f.test}`;

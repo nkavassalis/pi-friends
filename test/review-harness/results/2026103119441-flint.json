@@ -1,0 +1,109 @@
+{
+  "friend": "flint",
+  "persona": "dbb7fa74bbf6",
+  "date": "2026-10-31T19:44:12.116Z",
+  "trials": [
+    {
+      "trial": "clean",
+      "plants": [],
+      "seconds": 288,
+      "promptTokens": 5376,
+      "completionTokens": 23152,
+      "finish": "stop",
+      "briefChars": 18090,
+      "format": "json",
+      "answerSha": "1e626ce4f500",
+      "findingCount": 2,
+      "bySeverity": {
+        "major": 1,
+        "note": 1
+      },
+      "demoted": 1,
+      "needs": [
+        "Whether index.ts dispatches to loadFriends when config.json contains a friends array, and how it selects the active friend, to confirm which code path is live.",
+        "The exact field names inside the SSE final usage chunk (e.g. whether completion_tokens is present) as emitted by the friend server."
+      ],
+      "hits": [],
+      "misses": [],
+      "genuine_found": [],
+      "genuine_missed": [
+        "queue-is-per-process",
+        "abort-orphansthe-generation",
+        "no-retry-on-transient-failure",
+        "unauthenticated-plain-http",
+        "budget-measured-in-chars",
+        "progress-counter-race"
+      ],
+      "spurious": [
+        "major: loadConfig and the legacy branch of loadFriends (keyFile resolution) — keyOrDefault is fed the merged config object, whose keyFile is always truthy because DEFAULTS supplies ~/.config/pi-friends/friend_key, so the <name>_key fallback never applies and a friend named other than the default resolves to the default friend's key file."
+      ],
+      "answers": [
+        {
+          "severity": "major",
+          "demoted": false,
+          "where": "loadConfig and the legacy branch of loadFriends (keyFile resolution)",
+          "claim": "keyOrDefault is fed the merged config object, whose keyFile is always truthy because DEFAULTS supplies ~/.config/pi-friends/friend_key, so the <name>_key fallback never applies and a friend named other than the default resolves to the default friend's key file.",
+          "test": "loadConfig with a config containing {\"name\":\"work\"} and no keyFile should resolve keyFile to ~/.config/pi-friends/work_key; the current code yields friend_key. After the fix the test passes."
+        },
+        {
+          "severity": "note",
+          "demoted": true,
+          "where": "askFriend return block (completionTokens field)",
+          "claim": "The result reads usage.completionTokens, but the OpenAI-compatible streaming usage object uses snake_case completion_tokens, so the field is always undefined and the reported completionTokens is always 0.",
+          "test": "A test asserting result.completionTokens equals the final SSE usage chunk's completion_tokens (e.g. 1234) fails on this code and passes once the field is read as usage.completion_tokens."
+        }
+      ],
+      "raw": "{\"findings\":[{\"severity\":\"major\",\"where\":\"askFriend return block (completionTokens field)\",\"claim\":\"The result reads usage.completionTokens, but the OpenAI-compatible streaming usage object uses snake_case completion_tokens, so the field is always undefined and the reported completionTokens is always 0.\",\"why\":\"FriendResult.completionTokens feeds token accounting and budget-exhaustion reporting; every streamed answer now reports 0 completion tokens, so a real user sees zero tokens used and the exhaustion/usage accounting is wrong.\",\"test\":\"A test asserting result.completionTokens equals the final SSE usage chunk's completion_tokens (e.g. 1234) fails on this code and passes once the field is read as usage.completion_tokens.\"},{\"severity\":\"major\",\"where\":\"loadConfig and the legacy branch of loadFriends (keyFile resolution)\",\"claim\":\"keyOrDefault is fed the merged config object, whose keyFile is always truthy because DEFAULTS supplies ~/.config/pi-friends/friend_key, so the <name>_key fallback never applies and a friend named other than the default resolves to the default friend's key file.\",\"why\":\"A user whose config names a friend (e.g. {\\\"name\\\":\\\"work\\\"}) without an explicit keyFile gets keyFile ~/.config/pi-friends/friend_key, causing a wrong key or a cannot-read-key failure instead of the expected ~/.config/pi-friends/work_key.\",\"test\":\"loadConfig with a config containing {\\\"name\\\":\\\"work\\\"} and no keyFile should resolve keyFile to ~/.config/pi-friends/work_key; the current code yields friend_key. After the fix the test passes.\"}],\"needs\":[\"Whether index.ts dispatches to loadFriends when config.json contains a friends array, and how it selects the active friend, to confirm which code path is live.\",\"The exact field names inside the SSE final usage chunk (e.g. whether completion_tokens is present) as emitted by the friend server.\"]}"
+    },
+    {
+      "trial": "planted",
+      "plants": [
+        "queue-no-serialization",
+        "content-no-typeguard",
+        "timeout-seconds"
+      ],
+      "seconds": 300,
+      "promptTokens": 5380,
+      "completionTokens": 24089,
+      "finish": "stop",
+      "briefChars": 18116,
+      "format": "json",
+      "answerSha": "3275d713c493",
+      "findingCount": 1,
+      "bySeverity": {
+        "blocker": 1
+      },
+      "demoted": 0,
+      "needs": [
+        "the patched Queue.run implementation and its offline queue tests in test/client.test.ts to confirm the serialization fix"
+      ],
+      "hits": [
+        "queue-no-serialization"
+      ],
+      "misses": [
+        "content-no-typeguard",
+        "timeout-seconds"
+      ],
+      "genuine_found": [],
+      "genuine_missed": [
+        "queue-is-per-process",
+        "abort-orphansthe-generation",
+        "no-retry-on-transient-failure",
+        "unauthenticated-plain-http",
+        "budget-measured-in-chars",
+        "progress-counter-race"
+      ],
+      "spurious": [],
+      "answers": [
+        {
+          "severity": "blocker",
+          "demoted": false,
+          "where": "Queue.run in extensions/friends/client.ts",
+          "claim": "run() does not wait for the previous task; each task starts immediately instead of chaining onto this.tail.",
+          "test": "Call queue.run() twice with tasks that settle asynchronously and assert the second task does not start until the first has settled. Fails on this code because the second task starts immediately; passes once run() chains onto this.tail."
+        }
+      ],
+      "raw": "{\"findings\":[{\"severity\":\"blocker\",\"where\":\"Queue.run in extensions/friends/client.ts\",\"claim\":\"run() does not wait for the previous task; each task starts immediately instead of chaining onto this.tail.\",\"why\":\"const next = Promise.resolve().then(go) creates a brand-new task promise rather than this.tail.then(go), so concurrent callers get concurrent generations. The friend server is single-generation and the queue exists precisely to serialize; with this bug the one-at-a-time guarantee is gone and a second call during an in-flight reply hits the server in parallel instead of queueing.\",\"test\":\"Call queue.run() twice with tasks that settle asynchronously and assert the second task does not start until the first has settled. Fails on this code because the second task starts immediately; passes once run() chains onto this.tail.\"}],\"needs\":[\"the patched Queue.run implementation and its offline queue tests in test/client.test.ts to confirm the serialization fix\"]}"
+    }
+  ]
+}

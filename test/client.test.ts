@@ -191,8 +191,7 @@ test("friends: an explicit empty keyFile counts as unset, not as an empty path",
 	assert.equal(loadFriends(p)[0].keyFile, "~/.config/pi-friends/a_key"); // was "", failing as "cannot read the API key file :"
 });
 
-test("the same empty-keyFile guard covers the legacy inline shape and loadConfig (the spread lets \"\" win)", () => {
-	// Found by the friend on the second review round, 2026-10-31: the first fix only guarded friends[],
+test("the same empty-keyFile guard covers the legacy inline shape and loadConfig (the spread lets \"\" win)", () => {	// Found by the friend on the second review round, 2026-10-31: the first fix only guarded friends[],
 	// and { ...DEFAULTS, ...file } re-introduces the empty string. Both branches are pinned now.
 	const inline = tmpCfg({ baseUrl: "http://h:1/v1", keyFile: "" });
 	assert.equal(loadFriends(inline)[0].keyFile, "~/.config/pi-friends/friend_key");
@@ -200,6 +199,16 @@ test("the same empty-keyFile guard covers the legacy inline shape and loadConfig
 	const named = tmpCfg({ baseUrl: "http://h:1/v1", name: "sage", keyFile: " " });
 	assert.equal(loadConfig(named).keyFile, "~/.config/pi-friends/sage_key");
 	assert.equal(loadConfig(tmpCfg({ keyFile: "~/k" })).keyFile, "~/k"); // explicit still wins
+});
+
+test("a named friend in the inline shape gets ITS OWN key file, not the default one", () => {
+	// Found by the friend on 2026-10-31 — a regression the empty-keyFile fix introduced: keyOrDefault was
+	// fed the MERGED config, where DEFAULTS always supplies a truthy keyFile, so the per-name fallback
+	// could never fire and every inline friend silently used friend_key.
+	const p = tmpCfg({ baseUrl: "http://h:1/v1", name: "work" });
+	assert.equal(loadFriends(p)[0].keyFile, "~/.config/pi-friends/work_key");
+	assert.equal(loadConfig(p).keyFile, "~/.config/pi-friends/work_key");
+	assert.equal(loadConfig(tmpCfg({ baseUrl: "http://h:1/v1" })).keyFile, "~/.config/pi-friends/friend_key"); // unnamed -> friend_key
 });
 
 test("friends: missing config file -> single friend on defaults", () => {
@@ -218,4 +227,78 @@ test("legacy inline shape still loads as one friend named 'friend' with the stan
 	// dir) was deleted 2026-10-31: it read the old config but still looked for the key in the new dir,
 	// so it half-worked. The inline SHAPE stays supported — it is cheap and harmless — but there is now
 	// exactly one config location.
+});
+
+// --- the six defects the review bench found, each pinned by the test that should have caught it ------
+
+test("queue survives a task that throws SYNCHRONOUSLY (pending used to leak and wedge the friend)", async () => {
+	const q = new Queue();
+	await assert.rejects(q.run(() => { throw new Error("sync boom"); }), /sync boom/);
+	assert.equal(q.length, 0, "the counter must not leak");
+	assert.equal(await q.run(async () => "still works"), "still works", "and the queue must not be wedged");
+});
+
+test("a caller abort is a cancellation, not an unreachable server", async () => {
+	const { url, server } = await serve(() => { /* accept, then never answer */ });
+	try {
+		const ac = new AbortController();
+		const p = askFriend({ ...DEFAULTS, baseUrl: url }, "k", "b", ac.signal);
+		setTimeout(() => ac.abort(), 60);
+		await assert.rejects(p, /cancelled by the caller/); // used to say "is the server up?"
+	} finally {
+		server.closeAllConnections();
+		server.close();
+	}
+});
+
+test("a stream-level error event surfaces instead of an empty answer or a hang", async () => {
+	const { url, server } = await serve((_b, res) => {
+		res.writeHead(200, { "Content-Type": "text/event-stream" });
+		res.write(`data: ${JSON.stringify({ error: { message: "model not loaded" } })}\n\n`);
+		res.end("data: [DONE]\n\n");
+	});
+	try {
+		await assert.rejects(askFriend({ ...DEFAULTS, baseUrl: url }, "k", "b"), /stream error: model not loaded/);
+	} finally {
+		server.close();
+	}
+});
+
+test("a final event with no trailing newline is not dropped", async () => {
+	const { url, server } = await serve((_b, res) => {
+		res.writeHead(200, { "Content-Type": "text/event-stream" });
+		res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "one " }, finish_reason: null }] })}\n\n`);
+		res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "two" }, finish_reason: "stop" }] })}`); // no \n, then EOF
+		res.end();
+	});
+	try {
+		const r = await askFriend({ ...DEFAULTS, baseUrl: url }, "k", "b");
+		assert.equal(r.answer, "one two");
+		assert.equal(r.finish, "stop");
+	} finally {
+		server.close();
+	}
+});
+
+test("one malformed SSE line is tolerated and counted, never fatal and never silent", async () => {
+	const { url, server } = await serve((_b, res) => {
+		res.writeHead(200, { "Content-Type": "text/event-stream" });
+		res.write(`data: {not json at all\n\n`); // a heartbeat/gateway artefact
+		res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "survived" }, finish_reason: "stop" }] })}\n\n`);
+		res.end("data: [DONE]\n\n");
+	});
+	try {
+		const r = await askFriend({ ...DEFAULTS, baseUrl: url }, "k", "b");
+		assert.equal(r.answer, "survived");
+		assert.equal(r.badChunks, 1);
+	} finally {
+		server.close();
+	}
+});
+
+test("friend names that collide, or sanitize to nothing, are a loud config error", () => {
+	const clash = tmpCfg({ friends: [{ name: "My Model", baseUrl: "http://a/v1" }, { name: "my-model", baseUrl: "http://b/v1" }] });
+	assert.throws(() => loadFriends(clash), /collide as ask_<name>/);
+	const blank = tmpCfg({ friends: [{ name: "!!!", baseUrl: "http://a/v1" }] });
+	assert.throws(() => loadFriends(blank), /empty tool name/);
 });

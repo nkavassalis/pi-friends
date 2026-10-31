@@ -37,8 +37,9 @@ const BRIEF_FRAMING_RESERVE = 2500;
 const queues = new Map<string, Queue>();
 const queueFor = (name: string) => queues.get(name) ?? (queues.set(name, new Queue()), queues.get(name)!);
 
-function statsLine(toolName: string, r: { seconds: number; promptTokens: number; cachedTokens: number; completionTokens: number; finish: string }) {
-	return `[${toolName}: ${Math.round(r.seconds)} s, ${r.promptTokens} prompt tokens (${r.cachedTokens} cached), ${r.completionTokens} completion tokens, finish=${r.finish}]`;
+function statsLine(toolName: string, r: { seconds: number; promptTokens: number; cachedTokens: number; completionTokens: number; finish: string; badChunks?: number }) {
+	const bad = r.badChunks ? `, ${r.badChunks} malformed SSE line(s)` : ""; // tolerated, but never silent
+	return `[${toolName}: ${Math.round(r.seconds)} s, ${r.promptTokens} prompt tokens (${r.cachedTokens} cached), ${r.completionTokens} completion tokens, finish=${r.finish}${bad}]`;
 }
 
 /** Send one brief to the friend through its queue, tunnel included. */

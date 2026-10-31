@@ -115,11 +115,17 @@ The bench is not in that list because it needs a live friend and costs ~5 min pe
   real secret on an allowed line is missed; `highEntropy` needs ≥16 chars, so a 15-char `token: "…"` is
   a notice that still sends; nothing looks inside base64 or prose. Fix a false positive by narrowing
   the rule, never by weakening it.
-- `queue.length` for the "waiting for N calls" message is read outside the queue — cosmetic race.
-- Real defects the bench found and nobody has fixed yet, all small: a caller abort is rewrapped as
-  "cannot reach the server"; SSE `data:` events carrying an error are skipped; `Queue.run` leaks
-  `pending` if `task()` throws synchronously; no final buffer/`TextDecoder` flush; one malformed
-  `data:` line aborts the whole call; friend names can sanitize to the same or an empty tool name.
+- Six real defects the bench found were **fixed 2026-10-31**, each pinned by the test that used to be
+  missing: caller abort reported as a cancellation; SSE `error` events thrown instead of skipped;
+  `Queue.run` surviving a synchronously-throwing task; final buffer/`TextDecoder` flush; a malformed
+  `data:` line tolerated and counted (`badChunks`, shown in the stats line — tolerated, never silent);
+  friend names that collide or sanitize to nothing are a loud config error. Also `keyFile` defaults now
+  cover every config branch.
+- What is still true and nobody has fixed: the queue only serializes **within one process** (two pi
+  sessions against one friend overlap); aborting the fetch does not stop the server's generation, so the
+  single slot stays busy; a dropped connection loses a 4-minute generation with no retry; the endpoint
+  is trusted blindly over plain HTTP; the brief budget is counted in characters while prefill costs
+  tokens; `queue.length` for the waiting message is read outside the queue.
 
 ## Not verified (2026-10-31)
 - Every bench number is one friend, no seeds, no repeats per run. Repeats are what
