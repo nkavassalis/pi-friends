@@ -1,0 +1,135 @@
+{
+  "friend": "flint",
+  "persona": "dbb7fa74bbf6",
+  "date": "2026-10-31T13:17:02.772Z",
+  "trials": [
+    {
+      "trial": "clean",
+      "plants": [],
+      "seconds": 259,
+      "promptTokens": 4613,
+      "completionTokens": 21459,
+      "finish": "stop",
+      "briefChars": 15258,
+      "format": "json",
+      "findingCount": 3,
+      "bySeverity": {
+        "major": 2,
+        "minor": 1
+      },
+      "demoted": 0,
+      "needs": [
+        "A reproduction of the abort-during-fetch path and the exact error message expected after the fix.",
+        "Confirmation of whether empty friend names or empty key files are valid user input or should be defaulted."
+      ],
+      "hits": [],
+      "misses": [],
+      "genuine_found": [
+        "abort-mislabel",
+        "name-collision"
+      ],
+      "genuine_missed": [
+        "sse-error-ignored",
+        "queue-pending-leak",
+        "stream-no-flush",
+        "json-parse-kills-stream",
+        "legacy-key-fallback"
+      ],
+      "spurious": [
+        "minor: loadFriends keyFile default — An empty friend keyFile is not defaulted to the per-name key path."
+      ],
+      "answers": [
+        {
+          "severity": "major",
+          "demoted": false,
+          "where": "askFriend fetch catch",
+          "claim": "The catch checks `timeout.aborted` instead of the combined abort signal.",
+          "test": "Abort the signal while the fetch is pending and expect an abort/timeout error; the current code throws the unreachable-server message, so this test fails."
+        },
+        {
+          "severity": "major",
+          "demoted": false,
+          "where": "loadFriends name sanitization",
+          "claim": "An empty friend name is not defaulted to `friend`.",
+          "test": "Load a friend with name: \"\" and expect the sanitized name to be \"friend\"; the current code returns an empty string, so this test fails."
+        },
+        {
+          "severity": "minor",
+          "demoted": false,
+          "where": "loadFriends keyFile default",
+          "claim": "An empty friend keyFile is not defaulted to the per-name key path.",
+          "test": "Load a friend with keyFile: \"\" and expect the default key path; the current code keeps the empty string, so this test fails."
+        }
+      ],
+      "raw": "{\"findings\":[{\"severity\":\"major\",\"where\":\"askFriend fetch catch\",\"claim\":\"The catch checks `timeout.aborted` instead of the combined abort signal.\",\"why\":\"A caller abort during the fetch does not set the timeout signal, so the error is misclassified as an unreachable server. A real user pressing Escape while the request is pending gets a misleading 'cannot reach' error instead of an abort.\",\"test\":\"Abort the signal while the fetch is pending and expect an abort/timeout error; the current code throws the unreachable-server message, so this test fails.\"},{\"severity\":\"major\",\"where\":\"loadFriends name sanitization\",\"claim\":\"An empty friend name is not defaulted to `friend`.\",\"why\":\"The code uses `f?.name ?? \\\"friend\\\"`, which keeps an empty string, so the sanitized name becomes an empty string and the tool name `ask_` is invalid.\",\"test\":\"Load a friend with name: \\\"\\\" and expect the sanitized name to be \\\"friend\\\"; the current code returns an empty string, so this test fails.\"},{\"severity\":\"minor\",\"where\":\"loadFriends keyFile default\",\"claim\":\"An empty friend keyFile is not defaulted to the per-name key path.\",\"why\":\"The code uses `f.keyFile ?? ~/.config/pi-friends/${clean}_key`, which keeps an empty string, so readKey tries to read an empty path instead of the default key file.\",\"test\":\"Load a friend with keyFile: \\\"\\\" and expect the default key path; the current code keeps the empty string, so this test fails.\"}],\"needs\":[\"A reproduction of the abort-during-fetch path and the exact error message expected after the fix.\",\"Confirmation of whether empty friend names or empty key files are valid user input or should be defaulted.\"]}"
+    },
+    {
+      "trial": "planted",
+      "plants": [
+        "queue-no-serialization",
+        "content-no-typeguard",
+        "timeout-seconds"
+      ],
+      "seconds": 246,
+      "promptTokens": 4596,
+      "completionTokens": 20553,
+      "finish": "stop",
+      "briefChars": 15203,
+      "format": "json",
+      "findingCount": 3,
+      "bySeverity": {
+        "blocker": 2,
+        "minor": 1
+      },
+      "demoted": 0,
+      "needs": [
+        "Confirm whether timeoutMin is documented and intended as minutes, and check runtime support for AbortSignal.timeout and AbortSignal.any.",
+        "Confirm the exact SSE framing sent by the friend server, especially whether the final event has a trailing newline.",
+        "Check call sites that rely on Queue.length or on ordering."
+      ],
+      "hits": [
+        "queue-no-serialization",
+        "timeout-seconds"
+      ],
+      "misses": [
+        "content-no-typeguard"
+      ],
+      "genuine_found": [
+        "stream-no-flush"
+      ],
+      "genuine_missed": [
+        "abort-mislabel",
+        "sse-error-ignored",
+        "queue-pending-leak",
+        "json-parse-kills-stream",
+        "name-collision",
+        "legacy-key-fallback"
+      ],
+      "spurious": [],
+      "answers": [
+        {
+          "severity": "blocker",
+          "demoted": false,
+          "where": "Queue.run",
+          "claim": "The queue does not serialize tasks and its length getter always returns 0.",
+          "test": "Two consecutive run() calls should execute one at a time in order; on this code both tasks start immediately and queue.length is 0."
+        },
+        {
+          "severity": "blocker",
+          "demoted": false,
+          "where": "askFriend timeout",
+          "claim": "The timeout is computed as cfg.timeoutMin * 1000, treating minutes as seconds.",
+          "test": "With a stalled SSE stream and default config, the request should time out after about 20 minutes, not 20 seconds; the code times out after 20 seconds."
+        },
+        {
+          "severity": "minor",
+          "demoted": false,
+          "where": "SSE parsing loop",
+          "claim": "The final SSE event is dropped if the stream ends without a trailing newline.",
+          "test": "A fake SSE server that sends a final data: {...} without a trailing newline should produce the answer; the current code drops it."
+        }
+      ],
+      "raw": "{\"findings\":[{\"severity\":\"blocker\",\"where\":\"Queue.run\",\"claim\":\"The queue does not serialize tasks and its length getter always returns 0.\",\"why\":\"pending is incremented and decremented synchronously around an asynchronously scheduled task, and tail is never awaited, so each run executes immediately and concurrently. A single-generation friend server must serve one request at a time, so parallel calls will be sent blindly and the queue cannot report state.\",\"test\":\"Two consecutive run() calls should execute one at a time in order; on this code both tasks start immediately and queue.length is 0.\"},{\"severity\":\"blocker\",\"where\":\"askFriend timeout\",\"claim\":\"The timeout is computed as cfg.timeoutMin * 1000, treating minutes as seconds.\",\"why\":\"DEFAULTS.timeoutMin is 20 minutes, but the code creates an AbortSignal.timeout of only 20 seconds, so normal long reasoning streams will be aborted before completion.\",\"test\":\"With a stalled SSE stream and default config, the request should time out after about 20 minutes, not 20 seconds; the code times out after 20 seconds.\"},{\"severity\":\"minor\",\"where\":\"SSE parsing loop\",\"claim\":\"The final SSE event is dropped if the stream ends without a trailing newline.\",\"why\":\"After the async iteration completes, any remaining buffered line is not processed, so a final data: ... event without a newline would be lost, yielding an empty answer.\",\"test\":\"A fake SSE server that sends a final data: {...} without a trailing newline should produce the answer; the current code drops it.\"}],\"needs\":[\"Confirm whether timeoutMin is documented and intended as minutes, and check runtime support for AbortSignal.timeout and AbortSignal.any.\",\"Confirm the exact SSE framing sent by the friend server, especially whether the final event has a trailing newline.\",\"Check call sites that rely on Queue.length or on ordering.\"]}"
+    }
+  ]
+}

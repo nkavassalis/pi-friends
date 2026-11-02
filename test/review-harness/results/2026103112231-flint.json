@@ -1,0 +1,133 @@
+{
+  "friend": "flint",
+  "persona": "488d6e456a28",
+  "date": "2026-10-31T12:23:11.662Z",
+  "trials": [
+    {
+      "trial": "clean",
+      "plants": [],
+      "seconds": 227,
+      "promptTokens": 2954,
+      "completionTokens": 19897,
+      "finish": "stop",
+      "briefChars": 10134,
+      "format": "json",
+      "findingCount": 3,
+      "bySeverity": {
+        "major": 3
+      },
+      "demoted": 0,
+      "needs": [
+        "The exact error payload shape sent by the friend server for stream-level errors.",
+        "The call-site handling of askFriend rejections to know how abort errors are consumed.",
+        "The actual legacy API key file location and whether the legacy config ever contained a keyFile field."
+      ],
+      "hits": [],
+      "misses": [],
+      "genuine_found": [
+        "abort-mislabel",
+        "sse-error-ignored"
+      ],
+      "genuine_missed": [
+        "queue-pending-leak",
+        "stream-no-flush",
+        "json-parse-kills-stream",
+        "name-collision"
+      ],
+      "spurious": [
+        "major: loadFriends/readKey and DEFAULTS — The legacy single-friend config fallback does not fall back to the legacy API key file path."
+      ],
+      "answers": [
+        {
+          "severity": "major",
+          "demoted": false,
+          "where": "askFriend fetch catch",
+          "claim": "The fetch error handler only checks the timeout signal, so a caller abort is misclassified and wrapped as a connectivity error.",
+          "test": "Abort the signal during a pending fetch to /chat/completions; expect askFriend to reject with an abort error, but the current code rejects with the cannot-reach message."
+        },
+        {
+          "severity": "major",
+          "demoted": false,
+          "where": "loadFriends/readKey and DEFAULTS",
+          "claim": "The legacy single-friend config fallback does not fall back to the legacy API key file path.",
+          "test": "Create a legacy config and key under ~/.config/pi-escalation/ with no new config, then read the friend key; expect the legacy key content, but the current code reads the new key path."
+        },
+        {
+          "severity": "major",
+          "demoted": false,
+          "where": "SSE parsing loop in askFriend",
+          "claim": "The SSE parser ignores error events and does not surface stream-level errors.",
+          "test": "Fake SSE server sends a final data event containing an error object; expect askFriend to reject with that error, but the current code resolves with an empty answer."
+        }
+      ],
+      "raw": "{\n  \"findings\": [\n    {\n      \"severity\": \"major\",\n      \"where\": \"askFriend fetch catch\",\n      \"claim\": \"The fetch error handler only checks the timeout signal, so a caller abort is misclassified and wrapped as a connectivity error.\",\n      \"why\": \"If the user aborts while the initial fetch is pending, the promise rejects with a generic friends: cannot reach error instead of an abort error, which breaks the escape hatch and can confuse the agent's cancellation handling.\",\n      \"test\": \"Abort the signal during a pending fetch to /chat/completions; expect askFriend to reject with an abort error, but the current code rejects with the cannot-reach message.\"\n    },\n    {\n      \"severity\": \"major\",\n      \"where\": \"loadFriends/readKey and DEFAULTS\",\n      \"claim\": \"The legacy single-friend config fallback does not fall back to the legacy API key file path.\",\n      \"why\": \"Existing users migrating from the pre-rename config location have their config at ~/.config/pi-escalation/config.json and likely their key at ~/.config/pi-escalation/friend_key; the fallback reads the old config but the default key remains at ~/.config/pi-friends/friend_key, so readKey fails.\",\n      \"test\": \"Create a legacy config and key under ~/.config/pi-escalation/ with no new config, then read the friend key; expect the legacy key content, but the current code reads the new key path.\"\n    },\n    {\n      \"severity\": \"major\",\n      \"where\": \"SSE parsing loop in askFriend\",\n      \"claim\": \"The SSE parser ignores error events and does not surface stream-level errors.\",\n      \"why\": \"If the server sends a streaming error, the client accumulates no answer and returns an empty answer, causing the tool to report an empty answer instead of the actual server error.\",\n      \"test\": \"Fake SSE server sends a final data event containing an error object; expect askFriend to reject with that error, but the current code resolves with an empty answer.\"\n    }\n  ],\n  \"needs\": [\n    \"The exact error payload shape sent by the friend server for stream-level errors.\",\n    \"The call-site handling of askFriend rejections to know how abort errors are consumed.\",\n    \"The actual legacy API key file location and whether the legacy config ever contained a keyFile field.\"\n  ]\n}"
+    },
+    {
+      "trial": "planted",
+      "plants": [
+        "queue-no-serialization",
+        "content-no-typeguard",
+        "timeout-seconds"
+      ],
+      "seconds": 300,
+      "promptTokens": 2937,
+      "completionTokens": 25147,
+      "finish": "stop",
+      "briefChars": 10079,
+      "format": "json",
+      "findingCount": 3,
+      "bySeverity": {
+        "blocker": 1,
+        "major": 1,
+        "minor": 1
+      },
+      "demoted": 0,
+      "needs": [
+        "Whether the runtime supports AbortSignal.any, since the code relies on it.",
+        "How the caller surfaces errors from askFriend when the abort signal fires."
+      ],
+      "hits": [
+        "timeout-seconds",
+        "queue-no-serialization"
+      ],
+      "misses": [
+        "content-no-typeguard"
+      ],
+      "genuine_found": [
+        "abort-mislabel"
+      ],
+      "genuine_missed": [
+        "sse-error-ignored",
+        "queue-pending-leak",
+        "stream-no-flush",
+        "json-parse-kills-stream",
+        "name-collision"
+      ],
+      "spurious": [],
+      "answers": [
+        {
+          "severity": "blocker",
+          "demoted": false,
+          "where": "askFriend (timeout setup)",
+          "claim": "The timeout is configured as cfg.timeoutMin * 1000 milliseconds, but timeoutMin is documented and named in minutes, so a 20-minute budget becomes a 20-second timeout.",
+          "test": "Set timeoutMin to 1 and stall the SSE stream; the current code times out after about 1 second, while the fixed code should allow about 60 seconds."
+        },
+        {
+          "severity": "major",
+          "demoted": false,
+          "where": "Queue.run",
+          "claim": "The queue does not serialize concurrent tasks: pending is decremented synchronously and tail is not awaited, so multiple run calls can start immediately.",
+          "test": "Call queue.run(task1) and queue.run(task2) without awaiting, with task1 delayed; assert task2 starts only after task1. The current code starts task2 immediately and fails this ordering assertion."
+        },
+        {
+          "severity": "minor",
+          "demoted": false,
+          "where": "askFriend (error handling)",
+          "claim": "When the caller aborts, the catch checks only the standalone timeout signal, not the combined signal, so the error is reported as an unreachable server instead of a clean abort.",
+          "test": "Abort the caller signal during a stalled stream; assert askFriend rejects with an abort-related error or that the error is not the reachability message. The current code fails the message assertion."
+        }
+      ],
+      "raw": "{\"findings\":[{\"severity\":\"blocker\",\"where\":\"askFriend (timeout setup)\",\"claim\":\"The timeout is configured as cfg.timeoutMin * 1000 milliseconds, but timeoutMin is documented and named in minutes, so a 20-minute budget becomes a 20-second timeout.\",\"why\":\"AbortSignal.timeout expects milliseconds. A real user with the default 20-minute timeout will have valid long reasoning streams aborted after about 20 seconds, and the error message still says minutes.\",\"test\":\"Set timeoutMin to 1 and stall the SSE stream; the current code times out after about 1 second, while the fixed code should allow about 60 seconds.\"},{\"severity\":\"major\",\"where\":\"Queue.run\",\"claim\":\"The queue does not serialize concurrent tasks: pending is decremented synchronously and tail is not awaited, so multiple run calls can start immediately.\",\"why\":\"The design requires one generation at a time; concurrent runs would send parallel requests to a single-generation server and fail or interleave.\",\"test\":\"Call queue.run(task1) and queue.run(task2) without awaiting, with task1 delayed; assert task2 starts only after task1. The current code starts task2 immediately and fails this ordering assertion.\"},{\"severity\":\"minor\",\"where\":\"askFriend (error handling)\",\"claim\":\"When the caller aborts, the catch checks only the standalone timeout signal, not the combined signal, so the error is reported as an unreachable server instead of a clean abort.\",\"why\":\"A user pressing escape during a stream would see a misleading 'cannot reach' error rather than an abort.\",\"test\":\"Abort the caller signal during a stalled stream; assert askFriend rejects with an abort-related error or that the error is not the reachability message. The current code fails the message assertion.\"}],\"needs\":[\"Whether the runtime supports AbortSignal.any, since the code relies on it.\",\"How the caller surfaces errors from askFriend when the abort signal fires.\"]}"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 # install-flint.sh: provision the FLINT friend (Recursive's rec server on the Mac) on this machine.
 #  - links extensions/friends into ~/.pi/agent/extensions/ (pi loads it at the next start; a symlink, so a git pull updates it)
 #  - copies the rec server's API key from the Mac into ~/.config/pi-friends/flint_key (mode 600)
-#  - writes ~/.config/pi-escalation/config.json if it doesn't exist: baseUrl = FLINT_URL from .env (edit baseUrl there to change
+#  - writes ~/.config/pi-friends/config.json if it doesn't exist: baseUrl = FLINT_URL from .env (edit baseUrl there to change
 #    the Mac's address). Without FLINT_URL it writes the optional SSH tunnel settings instead (LOCAL_PORT).
 #   scripts/install.sh [--uninstall]
 set -euo pipefail
