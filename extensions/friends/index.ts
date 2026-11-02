@@ -15,11 +15,16 @@ import {
 	askFriend,
 	checkBrief,
 	CONFIG_PATH,
+	FRIENDS_STATE_PATH,
 	gateBrief,
+	isDisabled,
 	loadFriends,
+	loadState,
+	probeFriend,
 	Queue,
 	readKey,
 	scanBrief,
+	setDisabled,
 	type FriendConfig,
 } from "./client.ts";
 import { buildReviewBrief, gitArgsFor, parseDiffFiles, parseReview, planDiffChunks, renderReview, REVIEW_SYSTEM, type DiffSource } from "./review.ts";
@@ -75,7 +80,7 @@ const usageOf = (r: { promptTokens: number; completionTokens: number; cachedToke
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
 
-function makeAskTool(f: FriendConfig) {
+function makeAskTool(f: FriendConfig, active: boolean) {
 	const name = f.name ?? "friend";
 	const toolName = `ask_${name}`;
 	const label = f.label ?? name;
@@ -105,11 +110,13 @@ function makeAskTool(f: FriendConfig) {
 		parameters: Type.Object({
 			brief: Type.String({ description: `Self-contained problem statement with all code, errors and constraints ${label} needs` }),
 		}),
+		defaultActive: active, // /friends off keeps the tool registered but undeclared to the model
 		// No executionMode: "sequential" — that flag makes pi serialize the WHOLE tool batch for the turn
 		// (pi-agent-core agent-loop.js), so it would stop two different friends from running at once. The
 		// per-friend Queue is what actually protects a single-generation server. Measured 2026-10-31.
 
 		async execute(_toolCallId, params, signal, onUpdate) {
+			guardDisabled(name, toolName, label);
 			const cfg = loadFriends().find((x) => x.name === name) ?? f; // re-read per call: baseUrl/key edits need no restart
 			const { r, notice } = await ask(cfg, queue, label, toolName, params.brief, cfg.system ?? DEFAULT_SYSTEM, signal, onUpdate);
 			const stats = statsLine(toolName, r);
@@ -130,7 +137,7 @@ function makeAskTool(f: FriendConfig) {
 	});
 }
 
-function makeReviewTool(f: FriendConfig) {
+function makeReviewTool(f: FriendConfig, active: boolean) {
 	const name = f.name ?? "friend";
 	const toolName = `review_${name}`;
 	const label = f.label ?? name;
@@ -163,8 +170,10 @@ function makeReviewTool(f: FriendConfig) {
 			context: Type.Optional(Type.String({ description: "Conventions/invariants/callers it cannot see — paste the relevant AGENTS.md rules" })),
 			answers: Type.Optional(Type.String({ description: "Round 2: what you fetched after its previous `needs`" })),
 		}),
+		defaultActive: active,
 
 		async execute(_toolCallId, p, signal, onUpdate) {
+			guardDisabled(name, toolName, label); // before the git call, not after
 			const cfg = loadFriends().find((x) => x.name === name) ?? f;
 			// 1. get the code under review, from git, without the model re-typing it
 			let diff = p.diff?.trim() ?? "";
@@ -243,40 +252,78 @@ function makeReviewTool(f: FriendConfig) {
 	});
 }
 
+const toolNamesFor = (name: string) => [`ask_${name}`, `review_${name}`];
+
+/** Off means undeclared to the model, not unregistered: the tools stay loaded so /friends on can bring
+ *  them back in the same session. The execute-time guard below is the belt to that pair of braces. */
+function setActive(pi: ExtensionAPI, name: string, on: boolean) {
+	const mine = toolNamesFor(name);
+	const rest = pi.getActiveTools().filter((n) => !mine.includes(n));
+	pi.setActiveTools(on ? [...rest, ...mine] : rest);
+}
+
+function guardDisabled(name: string, toolName: string, label: string) {
+	if (isDisabled(name)) throw new Error(`${toolName}: ${label} is switched off — the inference box may be down. /friends on ${name} re-enables it, /friends shows reachability.`);
+}
+
 export default function (pi: ExtensionAPI) {
+	const disabled = new Set(loadState().disabled ?? []);
 	for (const f of loadFriends()) {
-		pi.registerTool(makeAskTool(f));
-		pi.registerTool(makeReviewTool(f));
+		const on = !disabled.has(f.name ?? "friend");
+		pi.registerTool(makeAskTool(f, on));
+		pi.registerTool(makeReviewTool(f, on));
 	}
 
-	// /friends — who is configured, and which tools are live. Status only: the key FILE's presence is
-	// reported, its contents never are (same rule as meta-guard's FORBIDDEN list).
+	// /friends — who is configured, whether the box answers, and the on/off switch for when it does not.
+	// Status only reports the key FILE's presence; its contents are never read into output.
 	pi.registerCommand("friends", {
-		description: "List configured friends (escalation models): tools, endpoint, model, key status",
-		handler: async (_args, ctx) => {
+		description: "List friends (probe reachability), or switch one off/on: /friends off [name] | /friends on [name]",
+		handler: async (args, ctx) => {
+			const [cmd = "", target = ""] = (args ?? "").trim().split(/\s+/);
 			const cur = loadFriends(); // fresh read: config edits show up without a restart
-			const lines = [`${cur.length} friend(s) configured — every one is an active ask_/review_ pair (no single "current" friend):`];
+
+			if (cmd === "off" || cmd === "on") {
+				const names = (target ? cur.filter((f) => f.name === target) : cur).map((f) => f.name ?? "friend");
+				if (!names.length) {
+					ctx.ui.notify(`friends: no friend named "${target}" (configured: ${cur.map((f) => f.name).join(", ") || "none"})`, "error");
+					return;
+				}
+				for (const n of names) {
+					setDisabled(n, cmd === "off");
+					setActive(pi, n, cmd === "on");
+				}
+				ctx.ui.notify(
+					`friends: ${cmd === "off" ? "switched off" : "switched on"} ${names.join(", ")} — ${cmd === "off" ? "ask_/review_ are no longer declared to the model" : "tools re-declared"}. Saved to ${FRIENDS_STATE_PATH}, so it survives a restart.`,
+					"info",
+				);
+				return;
+			}
+
+			const lines = [`${cur.length} friend(s) configured — each is an ask_/review_ pair (no single "current" friend):`];
 			if (cur.length === 0) {
 				// Deleting the pre-rename fallback (2026-10-31) could otherwise look like the extension is broken:
 				// zero tools and no clue that the config is one directory over.
 				const legacy = join(homedir(), ".config", "pi-escalation", "config.json");
 				lines.push(existsSync(legacy) ? `  none: a pre-rename config exists at ${legacy} — move it to ${CONFIG_PATH}` : `  none: write ${CONFIG_PATH} (see the README)`);
 			}
-			for (const f of cur) {
+			const probes = await Promise.all(cur.map((f) => probeFriend(f)));
+			cur.forEach((f, i) => {
 				const kf = f.keyFile?.startsWith("~/") ? join(homedir(), f.keyFile.slice(2)) : f.keyFile ?? "";
 				const key = kf && existsSync(kf) ? (readFileSync(kf, "utf8").trim() ? "key ok" : "key EMPTY") : "key MISSING";
+				const p = probes[i];
 				const bits = [
 					`ask_${f.name} + review_${f.name}`,
+					isDisabled(f.name ?? "friend") ? "OFF (/friends on)" : "on",
+					p.ok ? `up ${p.ms} ms` : `DOWN: ${p.why}`,
 					f.baseUrl,
 					`model=${f.model}`,
 					key,
 					f.tunnel ? `tunnel via ${f.tunnel.host}` : "direct",
 					`scan ${f.scanBrief ?? "block"}`,
-					f.system ? "custom ask persona" : "default ask persona",
-					f.reviewSystem ? "custom review persona" : "default review persona",
 				];
 				lines.push(`  ${f.name}: ${bits.join(" | ")}`);
-			}
+			});
+			if (cur.length) lines.push("  /friends off [name] when the box is down; /friends on [name] to bring it back (no restart).");
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});

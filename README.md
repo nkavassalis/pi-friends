@@ -60,7 +60,11 @@ pi --extension extensions/friends/index.ts                  # one run, nothing i
 
 Then write `~/.config/pi-friends/config.json` (see the shape above) and a key file per friend that
 auths: `~/.config/pi-friends/<name>_key` (mode 600; contents never displayed by anything here).
-`/friends` inside pi lists configured friends — tool, endpoint, model, key status, tunnel/direct.
+`/friends` inside pi lists configured friends — tool, endpoint, model, key status, tunnel/direct — and
+**probes each one** (`GET /models`, 2 s budget) so you can see whether the box is answering before you
+spend a turn on it. `/friends off [name]` switches a friend's tools off (immediately, and across
+restarts via `~/.config/pi-friends/state.json`); `/friends on [name]` brings them back. No restart
+either way.
 Config is re-read per call, so `baseUrl`/key edits take effect without a restart; a **new friend**
 needs a pi restart (tools register at startup).
 
@@ -90,8 +94,18 @@ take the defaults in `client.ts`.
 | `maxTokens` | 32768 | reasoning **and** answer share this; reasoning-only exhaustion is reported as such |
 | `temperature` / `topP` / `topK` | 0.6 / 0.95 / 20 | the measured-best setting for flint; tune per friend |
 | `timeoutMin` | 20 | whole request, queue wait excluded |
+| `connectTimeoutSec` | 10 | how long to wait for the server to **start** answering. Two clocks on purpose: a stopped server refuses in ~17 ms, but a **powered-off** box blackholes the SYN and the call used to sit for the full `timeoutMin` |
 | `maxBriefChars` | 64000 | longer briefs are refused with advice, never truncated |
 | `tunnel` | unset | optional `{host, identity, localPort, remotePort}`: the tool opens/repairs a loopback `ssh -N -L` itself — for friends on machines that aren't always reachable |
+
+## Taking the friend's box down
+
+Nothing to remember: `/friends off` (no restart, persists), and `/friends on` when it's back. Off means
+the tools are **not declared to the model** at all, so the agent cannot waste a turn discovering the box
+is gone — and if something calls them anyway, they fail in milliseconds with a message telling you the
+switch. If you'd rather not use the command, `printf '{"friends":[]}\n' > ~/.config/pi-friends/config.json`
+plus a restart registers no friend tools at all; deleting the file instead leaves one phantom friend on
+`127.0.0.1:11501`, which fails fast but is confusing.
 
 ## Reviewing code with a friend
 
@@ -142,7 +156,7 @@ node --experimental-strip-types --test test/*.test.ts test/review-harness/*.test
 bash -n scripts/*.sh
 ```
 
-54 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
+58 tests cover streaming (reasoning in `delta.reasoning`, answer in `delta.content`, usage in the
 final empty-choices chunk), request shape and auth headers, timeouts, abort, the queue (including a
 task that throws synchronously), the brief limit, config loading (legacy + friends shapes, empty
 `friends: []`, name sanitizing, colliding names, per-name and empty `keyFile` defaults in every
@@ -150,7 +164,10 @@ branch), the tunnel state machine, the reviewer half (`REVIEW_SYSTEM`, the JSON 
 fallback, `needs`, severity sorting, the 12-cap, the no-runnable-test demotion, `git` argument
 validation and diff splitting), and the secret gate (every block rule, warn rules, loopback and
 placeholders not tripping, `scanAllow`, no echoed secrets, diff deletions being scanned, and a check
-that the gate does not refuse this repo's own tracked files).
+that the gate does not refuse this repo's own tracked files), the on/off state file (round-trip,
+additive, corrupt file ignored), the probe (up / refused / 401-as-reachable / unreachable within its own
+budget), and the two clocks (a dead endpoint costs `connectTimeoutSec`, not `timeoutMin`; a live server
+is unaffected by it).
 
 The review bench is separate because it costs minutes, not milliseconds — it needs a real friend:
 

@@ -18,7 +18,7 @@ Rules:
 |---|---|
 | `package.json` | npm/pi package manifest; the `pi-package` keyword is what makes it discoverable in the pi gallery |
 | `extensions/friends/index.ts` | the pi extension: per configured friend an `ask_<name>` and a `review_<name>` tool, plus `/friends` |
-| `extensions/friends/client.ts` | config (legacy + `friends[]` shapes), per-friend one-at-a-time queue, the streamed request, brief check (no pi imports) |
+| `extensions/friends/client.ts` | config (legacy + `friends[]` shapes), per-friend one-at-a-time queue, the streamed request, brief check, the outbound secret gate, the on/off state file, the reachability probe (no pi imports) |
 | `extensions/friends/review.ts` | the reviewer half: `REVIEW_SYSTEM` persona, `buildReviewBrief`, the lenient `parseReview`, `renderReview` (no pi imports) |
 | `extensions/friends/tunnel.ts` | optional on-demand SSH tunnel (used only with a `tunnel` config block) |
 | `test/client.test.ts`, `test/tunnel.test.ts`, `test/fake_ssh.mjs` | offline tests: fake OpenAI-compatible SSE server, fake ssh |
@@ -52,6 +52,19 @@ The bench is not in that list because it needs a live friend and costs ~5 min pe
 - Friend tools deliberately do **not** set `executionMode: "sequential"`: that flag makes pi take the
   sequential path for the whole tool batch (`pi-agent-core` `agent-loop.js`), which would stop two
   different friends from running in one turn. The `Queue` is what protects a single-generation server.
+- **Two clocks** on the request. `timeoutMin` bounds the whole generation (reasoning models are slow,
+  that is normal); `connectTimeoutSec` (default 10) bounds only the wait for the server to *start*
+  answering. Measured 2026-10-31: a stopped server gives `ECONNREFUSED` in ~17 ms, but a **powered-off
+  box blackholes the SYN** and the call sat for the full 20 minutes. The connect abort fires only until
+  headers arrive (`clearTimeout` after that), so a slow-but-alive server is never cut off.
+- **Off means undeclared, not unregistered.** `/friends off` sets `defaultActive: false` at registration
+  and removes the pair from `pi.setActiveTools()`; the tools stay loaded so `/friends on` works in the
+  same session. `guardDisabled` at the top of both `execute`s is the belt — it also covers the case where
+  the state file changed after startup. State lives in `state.json`, **not** `config.json`, so config
+  stays shareable. `loadState` treats a corrupt file as "nothing disabled" (a half-written file must not
+  take the extension down), unlike `loadConfig`, which is loud: a broken config is worth an error.
+- `probeFriend` is `GET /models` with its own 2 s budget. `HTTP 401/403` is reported as *reachable, key
+  wrong* — that is not "the box is down", and conflating the two would send you to check the power.
 - `loadFriends()` re-reads the file on every call (config edits need no restart) but tools register
   once at startup, so adding a friend needs a pi restart; changing its `baseUrl` does not.
   `{"friends": []}` means no friends — it no longer silently yields a phantom friend on the default
@@ -67,6 +80,13 @@ The bench is not in that list because it needs a live friend and costs ~5 min pe
   credential on one source line makes `test/scan.test.ts`'s last test refuse a diff of pi-friends
   itself — which is exactly what ate an 8-minute review call on 2026-10-31 while that file was still
   untracked.
+- **To exercise `index.ts` (tool registration, `/friends`) without pi:** copy `extensions/friends/*.ts`
+  to a scratch dir, symlink that dir's `node_modules` to the pi install's, run a driver with `HOME=` a
+  temp dir (so `CONFIG_PATH`/`FRIENDS_STATE_PATH` resolve there) and a stub `ExtensionAPI`
+  (`registerTool`/`registerCommand` capture, `getActiveTools`/`setActiveTools` over an array, `ui.notify`
+  collects) against an in-process fake SSE server. That is how the off/on switch was verified on
+  2026-10-31 — `pi --print "/friends"` prints nothing, because slash commands do not run in print mode.
+  Keep it out of `npm test`: it depends on pi's packages being installed.
 
 ## Design decisions, reviewer half (2026-10-31)
 
@@ -128,6 +148,12 @@ The bench is not in that list because it needs a live friend and costs ~5 min pe
   tokens; `queue.length` for the waiting message is read outside the queue.
 
 ## Not verified (2026-10-31)
+- The off/probe/connect-timeout wiring **was** driven end-to-end against the real `index.ts` (stub
+  `ExtensionAPI`, fake `$HOME`, in-process SSE server — see the note above): disabled ⇒ `defaultActive:
+  false` and a call that fails before touching the socket; `/friends` ⇒ `up 18 ms`; `on`/`off` ⇒ active
+  set and `state.json` both update; unknown name ⇒ error. What that driver cannot prove is how pi itself
+  treats `defaultActive: false` in a real session (it reads pi's shipped types, not a live TUI), and
+  whether `setActiveTools` mid-turn is honoured by the running loop.
 - Every bench number is one friend, no seeds, no repeats per run. Repeats are what
   `test/review-harness/results/` is for — quote the file, not a single run.
 - The `executionMode` claim above is from reading shipped JS, not from a timed two-friend run. To

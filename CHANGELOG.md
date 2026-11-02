@@ -5,6 +5,19 @@ Dates YYYY-MM-DD. Measured claims link to a result file next to them.
 ## Unreleased
 
 ### Added
+- **`/friends off [name]` / `/friends on [name]`** — switch a friend's `ask_`/`review_` tools off without
+  restarting pi, for when its box is down. Off means the tools are not declared to the model at all; a
+  call that arrives anyway fails in milliseconds and names the switch. Persisted in
+  `~/.config/pi-friends/state.json` (kept out of `config.json` so config stays shareable), so it survives
+  a restart.
+- **`/friends` now probes every friend** (`GET /models`, 2 s budget): `up 18 ms`, `DOWN: ECONNREFUSED`,
+  `DOWN: no answer in 2s (host unreachable? is the box on?)`, or `HTTP 401 (reachable; key missing or
+  wrong)` — reachable-but-mis-keyed is deliberately not reported as "the box is down".
+- **`connectTimeoutSec`** (default 10), a second clock bounding only the wait for the server to *start*
+  answering. Measured: a stopped server refuses in ~17 ms, but a powered-off box blackholes the SYN and
+  the call sat for the full `timeoutMin` — 20 minutes, per call, and the agent may retry.
+
+### Fixed
 - `review_<name>`, one tool per friend alongside `ask_<name>`, sharing the friend's one queue. It
   fetches the diff itself (`staged` / `base` / `files` / `diff`) so a large diff never passes through
   the model's output tokens, reviews it blind with its own persona, and returns findings ranked
@@ -42,6 +55,7 @@ Dates YYYY-MM-DD. Measured claims link to a result file next to them.
   single-generation protection.
 - Docs: the reviewer claim is now measured, with two result tables and their limits
   (`test/review-harness/README.md`) instead of "promising but unmeasured".
+- `/friends` status lines lead with `on`/`OFF` and the probe result, before endpoint and model.
 
 ## 1.0.0
 

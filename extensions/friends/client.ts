@@ -1,8 +1,8 @@
 // Friend client: config, a one-at-a-time queue, and one streamed chat request.
 // No pi imports, so `node --test` can run it (test/client.test.ts) against a fake server.
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TunnelConfig } from "./tunnel.ts";
 
 export interface FriendConfig {
@@ -16,6 +16,7 @@ export interface FriendConfig {
 	topP: number;
 	topK: number;
 	timeoutMin: number; // whole request, queue wait excluded
+	connectTimeoutSec?: number; // how long to wait for the server to START answering at all — a dead box must cost seconds, not timeoutMin
 	maxBriefChars: number; // longer briefs are refused (slow hosts prefill ~600 tok/s), never cut
 	tunnel?: TunnelConfig; // set: the tool opens/repairs the SSH tunnel itself before each call (tunnel.ts)
 	system?: string; // persona for the one-turn chat (index.ts has a default)
@@ -38,11 +39,46 @@ export const DEFAULTS: FriendConfig = {
 	topP: 0.95,
 	topK: 20,
 	timeoutMin: 20,
+	connectTimeoutSec: 10, // measured 2026-10-31: a refused port fails in ~17 ms, but an OFF box blackholes SYN and the call sat for the full timeoutMin
 	maxBriefChars: 64000, // ~16-18K tokens, ~30 s of prefill on a slow host
 	scanBrief: "block",
 };
 
 export const CONFIG_PATH = join(homedir(), ".config", "pi-friends", "config.json");
+/** Not config: what the operator switched off with /friends. Kept separate so config.json stays shareable. */
+export const FRIENDS_STATE_PATH = join(homedir(), ".config", "pi-friends", "state.json");
+
+export interface FriendsState {
+	disabled?: string[]; // friend names whose tools are switched off, across restarts
+}
+
+export function loadState(p = FRIENDS_STATE_PATH): FriendsState {
+	let raw: string;
+	try {
+		raw = readFileSync(p, "utf8");
+	} catch (e: any) {
+		if (e?.code !== "ENOENT") throw new Error(`friends: cannot read ${p}: ${e.message}`);
+		return { disabled: [] };
+	}
+	try {
+		const s = JSON.parse(raw);
+		return { disabled: Array.isArray(s?.disabled) ? s.disabled.map(String) : [] };
+	} catch {
+		return { disabled: [] }; // a half-written state file must not take the extension down with it
+	}
+}
+
+/** Toggle a friend and persist it, so taking the inference box down does not need a config edit + restart. */
+export function setDisabled(name: string, off: boolean, p = FRIENDS_STATE_PATH): string[] {
+	const cur = new Set(loadState(p).disabled ?? []);
+	off ? cur.add(name) : cur.delete(name);
+	const next = { disabled: [...cur].sort() };
+	mkdirSync(dirname(p), { recursive: true });
+	writeFileSync(p, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
+	return next.disabled;
+}
+
+export const isDisabled = (name: string, p = FRIENDS_STATE_PATH) => (loadState(p).disabled ?? []).includes(name);
 
 const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
@@ -147,6 +183,39 @@ export interface FriendResult {
 
 export type Progress = (p: { seconds: number; reasoningChars: number; answerChars: number }) => void;
 
+export interface Probe {
+	ok: boolean;
+	ms: number;
+	why?: string; // never contains the key or the response body
+}
+
+/**
+ * Cheap reachability check (/friends), so you can see the box is gone before spending a turn on it.
+ * GET /models with a short budget; a 401 still counts as "the endpoint is there", reported as such.
+ */
+export async function probeFriend(cfg: FriendConfig, timeoutMs = 2000): Promise<Probe> {
+	const t0 = Date.now();
+	let key = "";
+	try {
+		key = readKey(cfg);
+	} catch {
+		/* no key file: probe unauthenticated; the why below says so if it matters */
+	}
+	try {
+		const res = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/models`, { headers: key ? { Authorization: `Bearer ${key}` } : undefined, signal: AbortSignal.timeout(timeoutMs) });
+		const ms = Date.now() - t0;
+		if (res.ok) return { ok: true, ms };
+		return { ok: false, ms, why: res.status === 401 || res.status === 403 ? `HTTP ${res.status} (reachable; key missing or wrong)` : `HTTP ${res.status}` };
+	} catch (e: any) {
+		const ms = Date.now() - t0;
+		const name = `${e?.name ?? ""} ${e?.message ?? ""}`;
+		const why = /AbortError|timeout/i.test(name)
+			? `no answer in ${Math.round(timeoutMs / 1000)}s (host unreachable? is the box on?)`
+			: String(e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e).slice(0, 90); // undici puts ECONNREFUSED on cause.code, but not always
+		return { ok: false, ms, why };
+	}
+}
+
 /** One fresh single-turn chat: the brief is the whole context, no session history. Streams so long reasoning never hits a
  *  header timeout; reasoning is counted, not returned. */
 export async function askFriend(
@@ -159,7 +228,13 @@ export async function askFriend(
 ): Promise<FriendResult> {
 	const t0 = Date.now();
 	const timeout = AbortSignal.timeout(cfg.timeoutMin * 60_000);
-	const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
+	// Two different clocks. timeoutMin bounds the whole generation (reasoning models are slow, that is
+	// normal); connectTimeoutSec bounds only the wait for the server to START answering. Without the
+	// second one, an inference box that is powered off blackholes the SYN and the call sits for 20 minutes.
+	const connectSec = Math.max(1, cfg.connectTimeoutSec ?? DEFAULTS.connectTimeoutSec!);
+	const connect = new AbortController();
+	const connectTimer = setTimeout(() => connect.abort(new Error("connect timeout")), connectSec * 1000);
+	const sig = AbortSignal.any([...(signal ? [signal] : []), timeout, connect.signal]);
 	const messages = [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: brief }];
 	let res: Response;
 	try {
@@ -178,13 +253,20 @@ export async function askFriend(
 			}),
 			signal: sig,
 		});
-	} catch (e: any) {
-		// Order matters. A caller abort (the user pressed escape) is not a connectivity problem, and
-		// "is the server up?" sends someone debugging a perfectly good server in the wrong direction.
-		if (signal?.aborted) throw new Error(`friends: cancelled by the caller before ${cfg.name ?? "friend"} answered`);
-		if (timeout.aborted) throw new Error(`friends: timed out after ${cfg.timeoutMin} min`);
-		throw new Error(`friends: cannot reach ${cfg.name ?? "friend"} at ${cfg.baseUrl} (is the server up, and is baseUrl right?): ${e.message}`);
-	}
+		} catch (e: any) {
+			// Order matters. A caller abort (the user pressed escape) is not a connectivity problem, and
+			// "is the server up?" sends someone debugging a perfectly good server in the wrong direction.
+			if (signal?.aborted) throw new Error(`friends: cancelled by the caller before ${cfg.name ?? "friend"} answered`);
+			if (connect.signal.aborted && !timeout.aborted)
+				throw new Error(
+					`friends: ${cfg.name ?? "friend"} did not start answering within ${connectSec}s at ${cfg.baseUrl} — is that box powered on and reachable? ` +
+						`(/friends probes every friend; /friends off ${cfg.name ?? "friend"} switches this tool off for the session)`,
+				);
+			if (timeout.aborted) throw new Error(`friends: timed out after ${cfg.timeoutMin} min`);
+			throw new Error(`friends: cannot reach ${cfg.name ?? "friend"} at ${cfg.baseUrl} (is the server up, and is baseUrl right?): ${e.message}`);
+		} finally {
+			clearTimeout(connectTimer); // headers are in; from here only the whole-request clock matters
+		}
 	if (!res.ok || !res.body) {
 		const text = await res.text().catch(() => "");
 		throw new Error(`friends: ${cfg.name ?? "friend"} answered HTTP ${res.status}: ${text.slice(0, 300)}`);

@@ -7,7 +7,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { askFriend, checkBrief, DEFAULTS, loadConfig, loadFriends, Queue, readKey } from "../extensions/friends/client.ts";
+import { askFriend, checkBrief, DEFAULTS, isDisabled, loadConfig, loadFriends, loadState, probeFriend, Queue, readKey, setDisabled } from "../extensions/friends/client.ts";
 type Handler = (body: any, res: any) => void;
 
 async function serve(handler: Handler): Promise<{ url: string; server: Server; bodies: any[] }> {
@@ -296,9 +296,90 @@ test("one malformed SSE line is tolerated and counted, never fatal and never sil
 	}
 });
 
-test("friend names that collide, or sanitize to nothing, are a loud config error", () => {
-	const clash = tmpCfg({ friends: [{ name: "My Model", baseUrl: "http://a/v1" }, { name: "my-model", baseUrl: "http://b/v1" }] });
+test("friend names that collide, or sanitize to nothing, are a loud config error", () => {	const clash = tmpCfg({ friends: [{ name: "My Model", baseUrl: "http://a/v1" }, { name: "my-model", baseUrl: "http://b/v1" }] });
 	assert.throws(() => loadFriends(clash), /collide as ask_<name>/);
 	const blank = tmpCfg({ friends: [{ name: "!!!", baseUrl: "http://a/v1" }] });
 	assert.throws(() => loadFriends(blank), /empty tool name/);
+});
+
+// --- off switch, reachability probe, and the connect timeout (the powered-off-box case) --------------
+
+/** GET /models has no JSON body, so the shared serve() helper (which parses one) cannot be used here. */
+async function serveRaw(status: number | "never", body = "{}"): Promise<{ url: string; server: Server }> {
+	const server = createServer((_req, res) => {
+		if (status === "never") return; // accept the connection, then say nothing: what an OFF box looks like
+		res.writeHead(status, { "Content-Type": "application/json" });
+		res.end(body);
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+	return { url: `http://127.0.0.1:${(server.address() as any).port}/v1`, server };
+}
+
+test("disabled friends persist in state.json, not in config.json", () => {
+	const p = join(mkdtempSync(join(tmpdir(), "pf-state-")), "state.json");
+	assert.deepEqual(loadState(p).disabled, []);
+	assert.deepEqual(setDisabled("flint", true, p), ["flint"]);
+	assert.equal(isDisabled("flint", p), true);
+	assert.deepEqual(setDisabled("sage", true, p), ["flint", "sage"]); // sorted, additive
+	assert.deepEqual(setDisabled("flint", false, p), ["sage"]);
+	assert.equal(isDisabled("flint", p), false);
+	writeFileSync(p, "{ half-written");
+	assert.deepEqual(loadState(p).disabled, [], "a corrupt state file must not take the extension down");
+});
+
+test("probeFriend: up, refused, unauthenticated, unreachable — each in its own short budget", async () => {
+	const up = await serveRaw(200, '{"data":[]}');
+	const unauth = await serveRaw(401);
+	const dead = await serveRaw("never");
+	try {
+		const a = await probeFriend({ ...DEFAULTS, baseUrl: up.url });
+		assert.equal(a.ok, true);
+		assert.ok(a.ms >= 0 && a.ms < 3000);
+		const b = await probeFriend({ ...DEFAULTS, baseUrl: unauth.url, keyFile: join(tmpdir(), "no-such-key") });
+		assert.equal(b.ok, false);
+		assert.match(b.why!, /HTTP 401 \(reachable; key missing or wrong\)/); // reachable-but-wrong is NOT "the box is down"
+		// A port that was listening and is gone: a real ECONNREFUSED. (127.0.0.1:1 never reaches TCP —
+		// undici rejects it as "bad port", which is a different failure and a bad thing to assert on.)
+		const ghost = await serveRaw(200);
+		const ghostPort = (ghost.server.address() as any).port;
+		await new Promise<void>((r) => ghost.server.close(() => r()));
+		const c = await probeFriend({ ...DEFAULTS, baseUrl: `http://127.0.0.1:${ghostPort}/v1` });
+		assert.equal(c.ok, false);
+		assert.match(c.why!, /ECONNREFUSED|refused/i);
+		const t0 = Date.now();
+		const d = await probeFriend({ ...DEFAULTS, baseUrl: dead.url }, 250);
+		assert.equal(d.ok, false);
+		assert.match(d.why!, /no answer in/);
+		assert.ok(Date.now() - t0 < 3000, "the probe must respect its own budget, not timeoutMin");
+	} finally {
+		for (const s of [up, unauth, dead]) {
+			s.server.closeAllConnections();
+			s.server.close();
+		}
+	}
+});
+
+test("a dead endpoint costs connectTimeoutSec, not timeoutMin", async () => {
+	const { url, server } = await serve(() => { /* never answer */ });
+	try {
+		const t0 = Date.now();
+		await assert.rejects(
+			askFriend({ ...DEFAULTS, baseUrl: url, connectTimeoutSec: 1, timeoutMin: 20 }, "k", "b"),
+			/did not start answering within 1s/,
+		);
+		assert.ok(Date.now() - t0 < 5000, "an OFF box must cost ~1 s here, not the 20-minute timeoutMin");
+	} finally {
+		server.closeAllConnections();
+		server.close();
+	}
+});
+
+test("a live server is unaffected by the connect budget (headers arrive early)", async () => {
+	const { url, server } = await serve((_b, res) => sse(res, [{ content: "fine" }]));
+	try {
+		const r = await askFriend({ ...DEFAULTS, baseUrl: url, connectTimeoutSec: 1 }, "k", "b");
+		assert.equal(r.answer, "fine");
+	} finally {
+		server.close();
+	}
 });
