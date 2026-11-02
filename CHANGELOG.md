@@ -2,7 +2,9 @@
 
 Dates YYYY-MM-DD. Measured claims link to a result file next to them.
 
-## Unreleased
+## 1.1.0 — 2026-11-02
+
+The reviewer half, measured; an outbound secret gate; and the switch for when the friend's box is down.
 
 ### Added
 - **`/friends off [name]` / `/friends on [name]`** — switch a friend's `ask_`/`review_` tools off without

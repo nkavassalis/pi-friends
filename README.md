@@ -53,7 +53,7 @@ the sample: [`test/review-harness/README.md`](test/review-harness/README.md).
 ## Install
 
 ```bash
-pi install git:github.com/nkavassalis/pi-friends@v1.0.0     # or npm: pi install npm:pi-friends
+pi install git:github.com/nkavassalis/pi-friends@v1.1.0     # or npm: pi install npm:pi-friends
 # or from a clone, for development:
 pi --extension extensions/friends/index.ts                  # one run, nothing installed globally
 ```

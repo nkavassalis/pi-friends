@@ -1,6 +1,6 @@
 {
   "name": "pi-friends",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "pi extension: consult other models on hard problems. Each friend (any OpenAI-compatible endpoint) gets its own ask_<name> tool; briefs are self-contained one-turn exchanges, answers come back without reasoning transcripts.",
   "keywords": ["pi-package", "pi-extension", "pi", "llm", "coding-agent", "escalation"],
   "license": "MIT",
